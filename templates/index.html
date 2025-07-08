@@ -11,7 +11,7 @@
     <div class="container">
         <header>
             <h1>🎤 智能会议纪要生成器</h1>
-            <p class="subtitle">基于AI的会议转录、纠错和纪要生成工具</p>
+            <p class="subtitle">基于AI的专业会议记录系统 - 多文档背景理解 • 智能术语标准化 • 结构化纪要生成</p>
             <div class="system-info">
                 <span class="device-info">🖥️ 转录设备: {{ whisper_device.upper() }}</span>
                 <span class="config-status">
@@ -54,14 +54,17 @@
                         </label>
                         <input type="file" id="docs" name="docs" accept=".pdf,.doc,.docx,.md,.txt" multiple />
                         <div class="file-info" id="docsInfo"></div>
+                        <div class="form-help">
+                            <span class="info">💡 支持多个文档：技术文档、会议资料、背景介绍等</span>
+                        </div>
                     </div>
 
                     <div class="form-group">
                         <label for="docsText">
                             <i class="icon">📝</i>
-                            或直接输入参考文档内容
+                            补充背景信息
                         </label>
-                        <textarea id="docsText" name="docsText" rows="6" placeholder="在此输入相关文档内容、会议背景信息等..."></textarea>
+                        <textarea id="docsText" name="docsText" rows="6" placeholder="在此输入补充的背景信息、会议目标、关键术语等...&#10;&#10;📌 智能处理提示：AI将结合所有参考资料进行：&#10;• 专业术语标准化（基于参考文档）&#10;• 上下文理解和错误纠正&#10;• 结构化会议纪要生成&#10;• 决策事项和行动计划提取&#10;• 重要信息汇总和分类整理&#10;&#10;💡 建议提供：项目背景、技术术语、参与人员、会议目标等"></textarea>
                     </div>
 
                     <div class="form-group">
@@ -81,11 +84,11 @@
                             {% if not config_status.openai_configured and not config_status.ollama_available %}
                                 <span class="error">❌ 未配置任何AI服务，请联系管理员</span>
                             {% elif config_status.openai_configured and not config_status.ollama_available %}
-                                <span class="info">使用OpenAI服务进行AI处理</span>
+                                <span class="info">🤖 专业AI处理：多文档背景理解、智能术语标准化、结构化纪要生成、决策行动项提取</span>
                             {% elif not config_status.openai_configured and config_status.ollama_available %}
-                                <span class="info">使用本地Ollama模型进行AI处理</span>
+                                <span class="info">🤖 专业AI处理：多文档背景理解、智能术语标准化、结构化纪要生成、决策行动项提取</span>
                             {% else %}
-                                <span class="info">可选择OpenAI或本地Ollama服务</span>
+                                <span class="info">🤖 专业AI处理：多文档背景理解、智能术语标准化、结构化纪要生成、决策行动项提取</span>
                             {% endif %}
                         </div>
                     </div>
@@ -230,7 +233,7 @@
         </main>
 
         <footer>
-            <p>支持中英文双语识别 | 基于Whisper Medium模型 | 集成OpenAI/OpenRouter和Ollama</p>
+            <p>支持中英文双语识别 | 基于Whisper Medium模型 | 多文档智能分析 | 专业纪要生成 | 集成OpenAI/OpenRouter和Ollama</p>
         </footer>
     </div>
 
@@ -356,15 +359,23 @@
         docsInput.addEventListener('change', function() {
             const files = Array.from(this.files);
             if (files.length > 0) {
-                const fileNames = files.map(f => f.name).join(', ');
+                const fileDetails = files.map(f => {
+                    const sizeKB = (f.size / 1024).toFixed(1);
+                    const type = f.type || '未知类型';
+                    return `• ${f.name} (${sizeKB} KB)`;
+                }).join('<br>');
+                
                 const totalSize = files.reduce((sum, f) => sum + f.size, 0);
                 const size = (totalSize / 1024 / 1024).toFixed(2);
+                
                 docsInfo.innerHTML = `
-                    <strong>${files.length}个文档文件:</strong><br>
-                    ${fileNames}<br>
-                    总大小: ${size} MB
+                    <strong>${files.length}个参考文档:</strong><br>
+                    ${fileDetails}<br>
+                    <strong>总大小: ${size} MB</strong>
                 `;
-                log(`选择文档文件: ${files.length}个文件 (${size}MB)`);
+                log(`选择参考文档: ${files.length}个文件 (${size}MB)`);
+            } else {
+                docsInfo.innerHTML = '';
             }
         });
 
