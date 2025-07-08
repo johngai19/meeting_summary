@@ -297,15 +297,27 @@ def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
     """调用OpenAI API或OpenRouter API，支持多模态"""
     try:
         if not openai:
-            logger.warning("🚫 OpenAI library not available")
+            logger.error("🚫 OpenAI library not available - please install: pip install openai")
             return None
             
         if not OPENAI_API_KEY:
-            logger.warning("🔑 OPENAI_API_KEY not configured in .env file")
+            logger.error("🔑 OPENAI_API_KEY not configured in .env file")
             return None
             
         used_model = model or OPENAI_MODEL
         logger.info(f"🤖 调用OpenAI API - 模型: {used_model}, 基础URL: {OPENAI_BASE_URL}")
+        logger.debug(f"📝 提示词长度: {len(prompt)} 字符")
+        
+        # 检查提示词长度
+        if len(prompt) > 100000:  # 约100k字符上限
+            logger.warning(f"⚠️ 提示词过长 ({len(prompt)} 字符)，可能影响处理效果")
+            # 截断提示词
+            prompt = prompt[:100000] + "\n\n[内容过长，已截断]"
+        
+        # 验证提示词内容
+        if not prompt.strip():
+            logger.error("❌ 提示词为空")
+            return None
         
         client = openai.OpenAI(
             api_key=OPENAI_API_KEY,
@@ -313,7 +325,7 @@ def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
         )
 
         messages: List[ChatCompletionMessageParam] = [
-            {"role": "system", "content": "You are a professional meeting assistant specialized in transcription correction and meeting summary generation. Please respond in Chinese."},
+            {"role": "system", "content": "你是专业的会议记录处理专家，擅长转录纠错和会议纪要生成。请用中文回复。"},
         ]
 
         if image_base64:
@@ -339,16 +351,33 @@ def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
             model=used_model,
             messages=messages,
             max_tokens=max_tokens,
-            temperature=0.7
+            temperature=0.3,  # 降低温度提高一致性
+            timeout=120  # 增加超时时间
         )
         
         content = response.choices[0].message.content
         result = content.strip() if content else ""
+        
+        # 验证返回结果
+        if not result:
+            logger.error("❌ OpenAI API 返回空结果")
+            return None
+            
+        if len(result) < 20:  # 结果太短可能有问题
+            logger.warning(f"⚠️ OpenAI API 返回结果较短: {len(result)} 字符")
+            
+        # 检查是否包含错误信息
+        if "Error" in result or "error" in result or "错误" in result:
+            logger.warning(f"⚠️ OpenAI返回内容可能包含错误信息: {result[:200]}...")
+            
         logger.info(f"✅ OpenAI API 调用成功 - 输出长度: {len(result)} 字符")
         return result
         
     except Exception as e:
-        logger.error(f"❌ OpenAI API call failed: {str(e)}")
+        logger.error(f"❌ OpenAI API 调用失败: {str(e)}")
+        # 记录更详细的错误信息
+        if hasattr(e, 'response'):
+            logger.error(f"HTTP状态码: {getattr(e.response, 'status_code', 'unknown')}")
         return None
 
 @handle_errors(max_retries=3)
@@ -358,6 +387,26 @@ def call_ollama_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
         used_model = model or OLLAMA_MODEL
         logger.info(f"🦙 调用Ollama API - 模型: {used_model}, 输入长度: {len(prompt)} 字符")
         
+        # 验证提示词内容
+        if not prompt.strip():
+            logger.error("❌ 提示词为空")
+            return None
+        
+        # 检查提示词长度
+        if len(prompt) > 50000:  # Ollama通常支持的上下文更小
+            logger.warning(f"⚠️ 提示词过长 ({len(prompt)} 字符)，截断处理")
+            prompt = prompt[:50000] + "\n\n[内容过长，已截断]"
+        
+        # 检查Ollama服务是否可用
+        try:
+            health_response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
+            if health_response.status_code != 200:
+                logger.error(f"❌ Ollama服务不可用，状态码: {health_response.status_code}")
+                return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ 无法连接到Ollama服务: {e}")
+            return None
+        
         response = requests.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             json={
@@ -366,7 +415,9 @@ def call_ollama_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
                 "stream": False,
                 "options": {
                     "num_predict": max_tokens,
-                    "temperature": 0.7
+                    "temperature": 0.3,  # 降低温度提高一致性
+                    "top_p": 0.9,
+                    "stop": ["<|im_end|>", "<|endoftext|>", "###", "---"]  # 添加停止词
                 }
             },
             timeout=300
@@ -374,57 +425,436 @@ def call_ollama_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
         
         if response.status_code == 200:
             result = response.json().get('response', '').strip()
+            
+            # 验证返回结果
+            if not result:
+                logger.error("❌ Ollama API 返回空结果")
+                return None
+                
+            if len(result) < 20:  # 结果太短可能有问题
+                logger.warning(f"⚠️ Ollama API 返回结果较短: {len(result)} 字符")
+                
+            # 检查是否包含错误信息
+            if "Error" in result or "error" in result or "错误" in result:
+                logger.warning(f"⚠️ Ollama返回内容可能包含错误信息: {result[:200]}...")
+                
             logger.info(f"✅ Ollama API 调用成功 - 输出长度: {len(result)} 字符")
             return result
         else:
-            logger.error(f"❌ Ollama API call failed with status {response.status_code}")
+            error_msg = response.json().get('error', '未知错误') if response.content else '无响应内容'
+            logger.error(f"❌ Ollama API 调用失败，状态码: {response.status_code}, 错误: {error_msg}")
             return None
             
     except Exception as e:
-        logger.error(f"❌ Ollama API call failed: {str(e)}")
+        logger.error(f"❌ Ollama API 调用异常: {str(e)}")
         return None
+
+def chunk_transcript(transcript: str, max_chunk_size: int = 8000) -> List[str]:
+    """将长转录文本分割成适合AI处理的块"""
+    if len(transcript) <= max_chunk_size:
+        return [transcript]
+    
+    logger.info(f"📄 开始分割长文本: {len(transcript)} 字符 -> 目标大小: {max_chunk_size}")
+    
+    # 尝试按段落分割
+    paragraphs = transcript.split('\n\n')
+    chunks = []
+    current_chunk = ""
+    
+    for paragraph in paragraphs:
+        # 检查单个段落是否过长
+        if len(paragraph) > max_chunk_size:
+            # 如果当前chunk不为空，先保存
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = ""
+            
+            # 按句子分割过长的段落
+            sentences = paragraph.split('。')
+            for sentence in sentences:
+                if len(current_chunk) + len(sentence) + 1 <= max_chunk_size:
+                    if current_chunk:
+                        current_chunk += '。' + sentence
+                    else:
+                        current_chunk = sentence
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk + '。')
+                    current_chunk = sentence
+        else:
+            # 检查是否可以加入当前chunk
+            if len(current_chunk) + len(paragraph) + 2 <= max_chunk_size:
+                if current_chunk:
+                    current_chunk += '\n\n' + paragraph
+                else:
+                    current_chunk = paragraph
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = paragraph
+    
+    # 保存最后一个chunk
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    # 如果仍有过长的块，进行强制分割
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_chunk_size:
+            final_chunks.append(chunk)
+        else:
+            # 强制按字符分割
+            logger.warning(f"⚠️ 强制分割过长块: {len(chunk)} 字符")
+            for i in range(0, len(chunk), max_chunk_size):
+                sub_chunk = chunk[i:i + max_chunk_size]
+                final_chunks.append(sub_chunk)
+    
+    logger.info(f"✅ 长文本分割完成: 原长度 {len(transcript)}, 分成 {len(final_chunks)} 块")
+    for i, chunk in enumerate(final_chunks):
+        logger.debug(f"   块 {i+1}: {len(chunk)} 字符")
+    
+    return final_chunks
+
+def process_long_transcript_correction(transcript: str, context: str, reference_docs: List[str], 
+                                     progress: ProcessingProgress, step_index: int, 
+                                     ai_provider: str, model: str) -> str:
+    """处理长转录文本的纠错"""
+    # 如果文本不长，直接处理
+    if len(transcript) <= 12000:
+        # 直接调用底层函数，避免递归
+        return _single_transcript_correction(transcript, context, reference_docs, 
+                                           progress, step_index, ai_provider, model)
+    
+    logger.info(f"📄 检测到长文本 ({len(transcript)} 字符)，使用分块处理")
+    progress.start_step(step_index)
+    
+    # 分块处理
+    chunks = chunk_transcript(transcript, max_chunk_size=10000)
+    corrected_chunks = []
+    
+    # 准备简化的参考文档（避免每次都发送完整文档）
+    simplified_reference = reference_docs[:3] if reference_docs else []  # 只取前3个文档
+    
+    for i, chunk in enumerate(chunks):
+        logger.info(f"📝 处理第 {i+1}/{len(chunks)} 块 ({len(chunk)} 字符)")
+        progress.update_step_progress(step_index, 20 + (i * 60 // len(chunks)))
+        
+        # 为每个块创建简化的上下文
+        chunk_context = f"这是会议转录的第{i+1}部分，共{len(chunks)}部分。{context}"
+        
+        # 处理单个块 - 使用内部函数避免递归
+        try:
+            corrected_chunk = _single_transcript_correction(
+                chunk, chunk_context, simplified_reference, 
+                ProcessingProgress(), 0,  # 使用临时进度对象
+                ai_provider, model
+            )
+            corrected_chunks.append(corrected_chunk)
+        except Exception as e:
+            logger.error(f"❌ 处理第 {i+1} 块时出错: {str(e)}")
+            corrected_chunks.append(chunk)  # 出错时使用原始块
+    
+    # 合并处理结果
+    try:
+        # 智能合并，保持段落结构
+        final_result = ""
+        for i, chunk in enumerate(corrected_chunks):
+            if i > 0:
+                # 检查是否需要添加分隔符
+                if not chunk.startswith('\n') and not final_result.endswith('\n'):
+                    final_result += '\n\n'
+            final_result += chunk
+        
+        progress.update_step_progress(step_index, 90)
+        
+        # 基本的后处理
+        final_result = final_result.strip()
+        
+        # 去除可能的重复内容
+        lines = final_result.split('\n')
+        seen_lines = set()
+        unique_lines = []
+        for line in lines:
+            if line.strip() and line not in seen_lines:
+                seen_lines.add(line)
+                unique_lines.append(line)
+            elif not line.strip():  # 保留空行
+                unique_lines.append(line)
+        
+        final_result = '\n'.join(unique_lines)
+        
+    except Exception as e:
+        logger.error(f"❌ 合并处理结果时出错: {str(e)}")
+        final_result = '\n\n'.join(corrected_chunks)
+    
+    progress.complete_step(step_index)
+    
+    logger.info(f"✅ 长文本分块处理完成: {len(chunks)} 块 -> {len(final_result)} 字符")
+    return final_result
+
+def _single_transcript_correction(transcript: str, context: str, reference_docs: List[str], 
+                                progress: ProcessingProgress, step_index: int, 
+                                ai_provider: str, model: str) -> str:
+    """单次转录纠错（内部函数，避免递归）"""
+    progress.start_step(step_index)
+    
+    try:
+        # 验证输入
+        if not transcript or len(transcript.strip()) < 10:
+            logger.warning("⚠️ 转录文本过短或为空，跳过AI纠错")
+            progress.complete_step(step_index)
+            return transcript
+        
+        # 验证提示词模板
+        if not correction_prompt_template:
+            logger.error("❌ 转录纠错提示词未加载，返回原始转录")
+            progress.complete_step(step_index)
+            return transcript
+        
+        # 准备参考内容
+        reference_content = "\n\n---\n\n".join(reference_docs) if reference_docs else "无参考文档"
+        context_content = context if context and context.strip() else "无特定背景信息"
+        
+        # 构建提示词
+        try:
+            prompt = correction_prompt_template.replace("{{transcript}}", transcript) \
+                                               .replace("{{context}}", context_content) \
+                                               .replace("{{reference_docs}}", reference_content)
+        except Exception as e:
+            logger.error(f"❌ 构建提示词失败: {str(e)}")
+            progress.complete_step(step_index)
+            return transcript
+        
+        # 验证提示词完整性
+        if "{{" in prompt or "}}" in prompt:
+            logger.warning("⚠️ 提示词变量替换不完整，可能影响效果")
+        
+        logger.info(f"📝 开始AI纠错 - 转录长度: {len(transcript)}, 提示词长度: {len(prompt)}")
+        progress.update_step_progress(step_index, 30)
+        
+        corrected_text = None
+        
+        # 尝试调用AI服务
+        if ai_provider == 'openai' and OPENAI_API_KEY:
+            logger.info("🤖 使用OpenAI进行转录纠错")
+            corrected_text = call_openai_api(prompt, model=model, max_tokens=6000)
+        elif ai_provider == 'ollama':
+            logger.info("🦙 使用Ollama进行转录纠错")
+            corrected_text = call_ollama_api(prompt, model=model, max_tokens=6000)
+        else:
+            logger.error(f"❌ 未配置有效的AI服务: {ai_provider}")
+        
+        progress.update_step_progress(step_index, 80)
+        
+        # 验证AI返回结果
+        if not corrected_text:
+            logger.warning("⚠️ AI纠错失败，返回原始转录")
+            corrected_text = transcript
+        elif len(corrected_text.strip()) < len(transcript) * 0.2:  # 纠错后文本过短
+            logger.warning("⚠️ AI纠错结果异常（过短），返回原始转录")
+            corrected_text = transcript
+        else:
+            # 基本的质量检查
+            improvement_ratio = len(corrected_text) / len(transcript)
+            if improvement_ratio > 5:  # 纠错后文本过长可能有问题
+                logger.warning(f"⚠️ AI纠错结果异常（过长 {improvement_ratio:.1f}x），返回原始转录")
+                corrected_text = transcript
+            else:
+                # 检查是否仍然是有意义的文本
+                if corrected_text.count('\n') > len(transcript) * 0.1:  # 换行过多
+                    logger.warning("⚠️ AI纠错结果格式异常，返回原始转录")
+                    corrected_text = transcript
+                else:
+                    logger.info(f"✅ AI纠错完成 - 原文: {len(transcript)} 字符, 纠错后: {len(corrected_text)} 字符")
+        
+        progress.complete_step(step_index)
+        return corrected_text
+        
+    except Exception as e:
+        logger.error(f"❌ 转录纠错过程出错: {str(e)}")
+        progress.complete_step(step_index)
+        return transcript  # 发生错误时返回原始转录
 
 @handle_errors(max_retries=3)
 def advanced_transcription_correction(transcript: str, context: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str, model: str) -> str:
-    """Corrects transcript using AI, context, and reference docs."""
-    progress.start_step(step_index)
-    reference_content = "\n\n---\n\n".join(reference_docs)
-    prompt = correction_prompt_template.replace("{{transcript}}", transcript) \
-                                       .replace("{{context}}", context) \
-                                       .replace("{{reference_docs}}", reference_content)
-    progress.update_step_progress(step_index, 30)
-    corrected_text = None
-    if ai_provider == 'openai' and OPENAI_API_KEY:
-        corrected_text = call_openai_api(prompt, model=model, max_tokens=4000)
-    elif ai_provider == 'ollama':
-        corrected_text = call_ollama_api(prompt, model=model, max_tokens=4000)
-    progress.update_step_progress(step_index, 80)
-    if not corrected_text:
-        logger.warning("AI correction failed, returning original transcript.")
-        corrected_text = transcript
-    progress.complete_step(step_index)
-    return corrected_text
+    """使用AI纠正转录文本，包含上下文和参考文档"""
+    # 对于长文本，使用分块处理
+    if len(transcript) > 15000:
+        return process_long_transcript_correction(transcript, context, reference_docs, 
+                                                progress, step_index, ai_provider, model)
+    else:
+        return _single_transcript_correction(transcript, context, reference_docs, 
+                                           progress, step_index, ai_provider, model)
 
 @handle_errors(max_retries=3)
 def generate_meeting_summary(corrected_transcript: str, context: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str, model: str) -> Dict[str, str]:
-    """Generates a meeting summary using AI."""
+    """使用AI生成会议纪要"""
     progress.start_step(step_index)
-    reference_content = "\n\n---\n\n".join(reference_docs)
-    prompt = summary_prompt_template.replace("{{corrected_transcript}}", corrected_transcript) \
-                                    .replace("{{context}}", context) \
-                                    .replace("{{reference_docs}}", reference_content)
-    progress.update_step_progress(step_index, 30)
-    summary = None
-    if ai_provider == 'openai' and OPENAI_API_KEY:
-        summary = call_openai_api(prompt, model=model, max_tokens=4000)
-    elif ai_provider == 'ollama':
-        summary = call_ollama_api(prompt, model=model, max_tokens=4000)
-    progress.update_step_progress(step_index, 80)
-    if not summary:
-        logger.warning("AI summary generation failed, creating a basic summary.")
-        summary = f"# Meeting Summary\n\n## Key Points\n- AI summary generation failed. This is a fallback summary.\n\n## Full Transcript\n{corrected_transcript}"
-    progress.complete_step(step_index)
-    return {"summary": summary}
+    
+    try:
+        # 验证输入
+        if not corrected_transcript or len(corrected_transcript.strip()) < 50:
+            logger.warning("⚠️ 纠错后转录文本过短，无法生成有效纪要")
+            progress.complete_step(step_index)
+            return {"summary": create_fallback_summary(corrected_transcript, context)}
+        
+        # 验证提示词模板
+        if not summary_prompt_template:
+            logger.error("❌ 会议纪要提示词未加载，创建基础纪要")
+            progress.complete_step(step_index)
+            return {"summary": create_fallback_summary(corrected_transcript, context)}
+        
+        # 准备参考内容
+        reference_content = "\n\n---\n\n".join(reference_docs) if reference_docs else "无参考文档"
+        context_content = context if context and context.strip() else "无特定背景信息"
+        
+        # 构建提示词
+        try:
+            prompt = summary_prompt_template.replace("{{corrected_transcript}}", corrected_transcript) \
+                                            .replace("{{context}}", context_content) \
+                                            .replace("{{reference_docs}}", reference_content)
+        except Exception as e:
+            logger.error(f"❌ 构建纪要提示词失败: {str(e)}")
+            progress.complete_step(step_index)
+            return {"summary": create_fallback_summary(corrected_transcript, context)}
+        
+        # 验证提示词完整性
+        if "{{" in prompt or "}}" in prompt:
+            logger.warning("⚠️ 纪要提示词变量替换不完整，可能影响效果")
+        
+        logger.info(f"📋 开始生成会议纪要 - 转录长度: {len(corrected_transcript)}, 提示词长度: {len(prompt)}")
+        progress.update_step_progress(step_index, 30)
+        
+        summary = None
+        
+        # 尝试调用AI服务
+        if ai_provider == 'openai' and OPENAI_API_KEY:
+            logger.info("🤖 使用OpenAI生成会议纪要")
+            summary = call_openai_api(prompt, model=model, max_tokens=5000)
+        elif ai_provider == 'ollama':
+            logger.info("🦙 使用Ollama生成会议纪要")
+            summary = call_ollama_api(prompt, model=model, max_tokens=5000)
+        else:
+            logger.error(f"❌ 未配置有效的AI服务: {ai_provider}")
+        
+        progress.update_step_progress(step_index, 80)
+        
+        # 验证AI返回结果
+        if not summary:
+            logger.warning("⚠️ AI纪要生成失败，创建基础纪要")
+            summary = create_fallback_summary(corrected_transcript, context)
+        elif len(summary.strip()) < 100:  # 纪要过短
+            logger.warning("⚠️ AI生成的纪要过短，创建基础纪要")
+            summary = create_fallback_summary(corrected_transcript, context)
+        else:
+            # 检查是否包含基本的纪要结构
+            required_keywords = ["会议", "议题", "讨论", "决策", "行动", "概览", "要点"]
+            if not any(keyword in summary for keyword in required_keywords):
+                logger.warning("⚠️ AI生成的纪要缺少关键结构，创建基础纪要")
+                summary = create_fallback_summary(corrected_transcript, context)
+            else:
+                # 检查是否包含markdown格式
+                if "##" not in summary and "**" not in summary:
+                    logger.warning("⚠️ AI生成的纪要缺少格式化，但内容可用")
+                
+                # 检查长度是否合理
+                if len(summary) > len(corrected_transcript) * 2:
+                    logger.warning("⚠️ AI生成的纪要过长，可能有重复内容")
+                
+                logger.info(f"✅ 会议纪要生成完成 - 长度: {len(summary)} 字符")
+        
+        progress.complete_step(step_index)
+        return {"summary": summary}
+        
+    except Exception as e:
+        logger.error(f"❌ 会议纪要生成过程出错: {str(e)}")
+        progress.complete_step(step_index)
+        return {"summary": create_fallback_summary(corrected_transcript, context)}
+
+def create_fallback_summary(transcript: str, context: str) -> str:
+    """创建基础会议纪要（当AI生成失败时使用）"""
+    try:
+        # 统计基本信息
+        word_count = len(transcript)
+        estimated_duration = word_count // 200  # 估算会议时长（按200字/分钟）
+        
+        # 简单的关键词提取
+        keywords = []
+        common_meeting_terms = ["项目", "任务", "计划", "目标", "问题", "方案", "建议", "决定", "安排", "时间", "讨论", "会议", "团队", "进度", "完成", "需要", "考虑", "确认"]
+        for term in common_meeting_terms:
+            if term in transcript:
+                keywords.append(term)
+        
+        # 尝试提取可能的参与者
+        participants = []
+        import re
+        # 简单的姓名模式匹配
+        name_patterns = [
+            r'[张李王刘陈杨赵黄周吴徐孙朱马胡郭林何高罗郑梁谢][A-Za-z\u4e00-\u9fff]{1,3}',
+            r'[A-Z][a-z]{2,8}',
+        ]
+        for pattern in name_patterns:
+            matches = re.findall(pattern, transcript)
+            participants.extend(matches[:5])  # 最多5个
+        
+        # 去重
+        participants = list(set(participants))
+        
+        # 提取可能的时间信息
+        time_patterns = [
+            r'\d{1,2}[月]\d{1,2}[日]',
+            r'\d{4}[-/]\d{1,2}[-/]\d{1,2}',
+            r'[本上下][周月年]',
+            r'[明今昨][天日]',
+            r'\d{1,2}[点时]',
+        ]
+        time_mentions = []
+        for pattern in time_patterns:
+            matches = re.findall(pattern, transcript)
+            time_mentions.extend(matches[:3])  # 最多3个
+        
+        # 构建基础纪要
+        summary = f"""# 会议纪要
+
+## 会议概览
+- **时间**: {', '.join(time_mentions) if time_mentions else '待补充'}
+- **预计时长**: 约 {estimated_duration} 分钟
+- **主要内容**: {context if context else '工作会议讨论'}
+- **参与人员**: {', '.join(participants) if participants else '待补充'}
+
+## 讨论要点
+{transcript[:800]}{'...' if len(transcript) > 800 else ''}
+
+## 关键信息
+- **涉及关键词**: {', '.join(keywords[:10]) if keywords else '待分析'}
+- **内容长度**: {word_count} 字符
+- **处理状态**: 自动生成基础版本
+
+## 后续跟进
+- 本纪要为系统自动生成的基础版本
+- 建议人工进一步完善和补充
+- 如需详细分析，请重新尝试AI生成功能
+
+---
+*本纪要由AI会议助手自动生成于 {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}*"""
+        
+        logger.info(f"✅ 创建基础纪要完成 - 长度: {len(summary)} 字符")
+        return summary
+        
+    except Exception as e:
+        logger.error(f"❌ 创建基础纪要失败: {str(e)}")
+        return f"""# 会议纪要
+
+## 会议内容
+{transcript[:1000]}{'...' if len(transcript) > 1000 else ''}
+
+## 处理说明
+- 本纪要为原始转录内容
+- 由于系统处理异常，未能生成结构化纪要
+- 建议人工整理或重新处理
+
+---
+*生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}*"""
 
 def extract_text_from_file(file_path: str) -> str:
     """从文件中提取文本"""
@@ -775,14 +1205,54 @@ def analyze_pdf_images(file_path: str, ai_provider: str) -> List[str]:
 def load_prompt(filename: str) -> str:
     """从文件加载提示词"""
     try:
-        with open(os.path.join('prompts', filename), 'r', encoding='utf-8') as f:
-            return f.read()
-    except FileNotFoundError:
-        logger.error(f"提示词文件未找到: {filename}")
+        prompt_path = os.path.join('prompts', filename)
+        if not os.path.exists(prompt_path):
+            logger.error(f"❌ 提示词文件不存在: {prompt_path}")
+            return ""
+            
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            
+        if not content:
+            logger.error(f"❌ 提示词文件为空: {filename}")
+            return ""
+            
+        if len(content) < 50:  # 提示词太短可能有问题
+            logger.warning(f"⚠️ 提示词文件过短: {filename} ({len(content)} 字符)")
+            
+        # 检查是否包含必要的占位符
+        if filename == 'correction_prompt.txt':
+            required_placeholders = ['{{transcript}}', '{{context}}', '{{reference_docs}}']
+        elif filename == 'summary_prompt.txt':
+            required_placeholders = ['{{corrected_transcript}}', '{{context}}', '{{reference_docs}}']
+        else:
+            required_placeholders = []
+            
+        missing_placeholders = []
+        for placeholder in required_placeholders:
+            if placeholder not in content:
+                missing_placeholders.append(placeholder)
+        
+        if missing_placeholders:
+            logger.error(f"❌ 提示词文件缺少必要占位符: {filename} - 缺少: {missing_placeholders}")
+            return ""
+            
+        logger.info(f"✅ 提示词加载成功: {filename} ({len(content)} 字符)")
+        return content
+        
+    except Exception as e:
+        logger.error(f"❌ 加载提示词文件失败 {filename}: {str(e)}")
         return ""
 
+# 加载提示词模板
 correction_prompt_template = load_prompt('correction_prompt.txt')
 summary_prompt_template = load_prompt('summary_prompt.txt')
+
+# 验证提示词是否加载成功
+if not correction_prompt_template:
+    logger.error("❌ 转录纠错提示词加载失败，AI纠错功能将不可用")
+if not summary_prompt_template:
+    logger.error("❌ 纪要生成提示词加载失败，AI纪要功能将不可用")
 
 if __name__ == '__main__':
     # 启动时显示配置信息
