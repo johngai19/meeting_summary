@@ -384,112 +384,47 @@ def call_ollama_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
         logger.error(f"❌ Ollama API call failed: {str(e)}")
         return None
 
-def advanced_transcription_correction(transcript: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str) -> str:
-    """高级转录文本纠错"""
+@handle_errors(max_retries=3)
+def advanced_transcription_correction(transcript: str, context: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str, model: str) -> str:
+    """Corrects transcript using AI, context, and reference docs."""
     progress.start_step(step_index)
-    
-    try:
-        # 处理参考文档，分类显示
-        reference_content = ""
-        if reference_docs:
-            reference_content = "## 参考背景资料：\n"
-            for i, doc in enumerate(reference_docs, 1):
-                doc_preview = doc[:1500] + "..." if len(doc) > 1500 else doc
-                reference_content += f"\n### 参考资料 {i}：\n{doc_preview}\n"
-        
-        # 构建专业的提示词
-        correction_prompt = correction_prompt_template.format(
-            transcript=transcript,
-            reference_docs=reference_content
-        )
-        
-        progress.update_step_progress(step_index, 30)
-        
-        # 根据AI提供商调用相应的API
-        corrected_text = None
-        if ai_provider == 'openai' and OPENAI_API_KEY:
-            corrected_text = call_openai_api(correction_prompt, max_tokens=4000)
-        elif ai_provider == 'ollama':
-            corrected_text = call_ollama_api(correction_prompt, max_tokens=4000)
-        
-        progress.update_step_progress(step_index, 80)
-        
-        if not corrected_text:
-            logger.warning("⚠️ AI纠错失败，返回原始转录文本")
-            corrected_text = transcript
-        
-        progress.complete_step(step_index)
-        return corrected_text
-        
-    except Exception as e:
-        logger.error(f"❌ 转录纠错失败: {str(e)}")
-        progress.complete_step(step_index)
-        return transcript
+    reference_content = "\n\n---\n\n".join(reference_docs)
+    prompt = correction_prompt_template.replace("{{transcript}}", transcript) \
+                                       .replace("{{context}}", context) \
+                                       .replace("{{reference_docs}}", reference_content)
+    progress.update_step_progress(step_index, 30)
+    corrected_text = None
+    if ai_provider == 'openai' and OPENAI_API_KEY:
+        corrected_text = call_openai_api(prompt, model=model, max_tokens=4000)
+    elif ai_provider == 'ollama':
+        corrected_text = call_ollama_api(prompt, model=model, max_tokens=4000)
+    progress.update_step_progress(step_index, 80)
+    if not corrected_text:
+        logger.warning("AI correction failed, returning original transcript.")
+        corrected_text = transcript
+    progress.complete_step(step_index)
+    return corrected_text
 
-def generate_meeting_summary(corrected_transcript: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str) -> Dict[str, str]:
-    """生成详细的会议纪要"""
+@handle_errors(max_retries=3)
+def generate_meeting_summary(corrected_transcript: str, context: str, reference_docs: List[str], progress: ProcessingProgress, step_index: int, ai_provider: str, model: str) -> Dict[str, str]:
+    """Generates a meeting summary using AI."""
     progress.start_step(step_index)
-    
-    try:
-        # 构建参考文档展示
-        reference_content = ""
-        if reference_docs:
-            reference_content = "## 参考背景资料：\n"
-            for i, doc in enumerate(reference_docs, 1):
-                doc_preview = doc[:1500] + "..." if len(doc) > 1500 else doc
-                reference_content += f"\n### 参考资料 {i}：\n{doc_preview}\n"
-
-        summary_prompt = summary_prompt_template.format(
-            corrected_transcript=corrected_transcript,
-            reference_docs=reference_content
-        )
-        
-        progress.update_step_progress(step_index, 30)
-        
-        # 根据AI提供商调用相应的API
-        summary = None
-        if ai_provider == 'openai' and OPENAI_API_KEY:
-            summary = call_openai_api(summary_prompt, max_tokens=4000)
-        elif ai_provider == 'ollama':
-            summary = call_ollama_api(summary_prompt, max_tokens=4000)
-        
-        progress.update_step_progress(step_index, 80)
-        
-        if not summary:
-            logger.warning("⚠️ AI会议纪要生成失败，使用智能分析格式")
-            # 智能分析转录内容，提取关键信息
-            lines = corrected_transcript.split('\n')
-            content_lines = [line.strip() for line in lines if line.strip()]
-            
-            # 简单的关键词提取
-            keywords = []
-            for line in content_lines:
-                if any(keyword in line for keyword in ['决定', '确定', '计划', '安排', '负责', '完成']):
-                    keywords.append(line)
-            
-            summary = f"""## 会议概要
-本次会议主要围绕相关议题进行了深入讨论，形成了多项重要共识。
-
-## 主要讨论内容
-{chr(10).join(content_lines[:10])}
-{'...' if len(content_lines) > 10 else ''}
-
-## 重要决议与行动计划
-{chr(10).join(keywords[:5]) if keywords else '会议讨论了相关议题，形成了初步共识。'}
-
-## 完整转录内容
-{corrected_transcript}
-
----
-_注：此纪要为自动生成的简化版本，建议配置AI服务获得更专业的会议纪要分析。_"""
-        
-        progress.complete_step(step_index)
-        return {"summary": summary}
-        
-    except Exception as e:
-        logger.error(f"❌ 会议纪要生成失败: {str(e)}")
-        progress.complete_step(step_index)
-        return {"summary": f"会议纪要生成失败: {str(e)}"}
+    reference_content = "\n\n---\n\n".join(reference_docs)
+    prompt = summary_prompt_template.replace("{{corrected_transcript}}", corrected_transcript) \
+                                    .replace("{{context}}", context) \
+                                    .replace("{{reference_docs}}", reference_content)
+    progress.update_step_progress(step_index, 30)
+    summary = None
+    if ai_provider == 'openai' and OPENAI_API_KEY:
+        summary = call_openai_api(prompt, model=model, max_tokens=4000)
+    elif ai_provider == 'ollama':
+        summary = call_ollama_api(prompt, model=model, max_tokens=4000)
+    progress.update_step_progress(step_index, 80)
+    if not summary:
+        logger.warning("AI summary generation failed, creating a basic summary.")
+        summary = f"# Meeting Summary\n\n## Key Points\n- AI summary generation failed. This is a fallback summary.\n\n## Full Transcript\n{corrected_transcript}"
+    progress.complete_step(step_index)
+    return {"summary": summary}
 
 def extract_text_from_file(file_path: str) -> str:
     """从文件中提取文本"""
@@ -579,15 +514,21 @@ def handle_join(session_id):
 @app.route('/process', methods=['POST'])
 def process_meeting():
     session_id = str(uuid.uuid4())
-    
     try:
-        # 获取表单数据
         video = request.files.get('video')
         docs = request.files.getlist('docs[]')
-        text_input = request.form.get('docsText', '')
+        context_input = request.form.get('context', '')
         ai_provider = request.form.get('aiProvider', 'openai')
         
-        logger.info(f"收到新的处理请求 - Session: {session_id[:8]}, AI: {ai_provider}")
+        # Determine the model to use
+        if ai_provider == 'openai':
+            model = request.form.get('model', OPENAI_MODELS[0]['id'])
+        else:
+            # Fallback for ollama if no model is selected or available
+            available_ollama = get_available_ollama_models()
+            model = request.form.get('model', available_ollama[0]['id'] if available_ollama else OLLAMA_DEFAULT_MODELS[0]['id'])
+
+        logger.info(f"收到新的处理请求 - Session: {session_id[:8]}, AI: {ai_provider}, Model: {model}")
         if video and video.filename:
             logger.info(f"  - 视频文件: {video.filename}")
         
@@ -626,215 +567,136 @@ def process_meeting():
         # 在单独的线程中处理
         thread = threading.Thread(
             target=process_meeting_async, 
-            args=(session_id, mov_path, video_filename, doc_files, text_input, ai_provider)
+            args=(session_id, mov_path, video_filename, doc_files, context_input, ai_provider, model)
         )
         thread.start()
         
         return jsonify({"session_id": session_id, "status": "processing"})
-    
     except Exception as e:
         logger.error(f"❌ 处理请求错误: {str(e)}")
         return jsonify({"error": f"处理请求错误: {str(e)}"}), 500
 
-def process_meeting_async(session_id: str, mov_path: str, video_filename: str, doc_files: list, text_input: str, ai_provider: str):
-    """异步处理会议"""
+def process_meeting_async(session_id: str, mov_path: str, video_filename: str, doc_files: list, context_input: str, ai_provider: str, model: str):
+    """Asynchronously processes the meeting from video to summary."""
     progress = ProcessingProgress()
     progress.session_id = session_id
-    
-    logger.info(f"🎬 [{session_id[:8]}] 开始处理会议 - 视频: {video_filename}, AI: {ai_provider}")
+    logger.info(f"🎬 [{session_id[:8]}] Starting meeting processing...")
     start_time = time.time()
     
     try:
-        # 设置处理步骤（带时间估算）
-        progress.add_step("video_validation", "验证视频文件", 2)
-        progress.add_step("audio_extraction", "提取音频", 10)
-        progress.add_step("speech_transcription", "语音转文字", 60)
-        progress.add_step("document_processing", "处理参考文档", 5)
-        progress.add_step("image_analysis", "分析文档中的图表", 20)
-        progress.add_step("ai_correction", "AI智能纠错", 30)
-        progress.add_step("summary_generation", "生成会议纪要", 25)
-        progress.add_step("file_generation", "生成下载文件", 5)
-        
-        # 步骤1：验证视频文件
+        # Define processing steps
+        progress.add_step("video_validation", "Validating video file", 2)
+        progress.add_step("audio_extraction", "Extracting audio", 10)
+        progress.add_step("speech_transcription", "Transcribing audio to text", 60)
+        progress.add_step("document_processing", "Processing reference documents", 5)
+        progress.add_step("image_analysis", "Analyzing images in PDFs", 20)
+        progress.add_step("ai_correction", "Correcting transcript with AI", 30)
+        progress.add_step("summary_generation", "Generating meeting summary", 25)
+        progress.add_step("file_generation", "Creating downloadable files", 5)
+
+        # Step 1: Validate Video
         progress.start_step(0)
         base_name = os.path.splitext(video_filename)[0]
-        
         if not os.path.exists(mov_path):
-            logger.error(f"❌ [{session_id[:8]}] 视频文件不存在: {mov_path}")
-            socketio.emit('error', {'message': '视频文件不存在'}, to=session_id)
-            return
-            
-        file_size = os.path.getsize(mov_path)
-        logger.info(f"📁 [{session_id[:8]}] 视频文件大小: {file_size / (1024*1024):.1f} MB")
-        
-        # 检查系统资源
-        memory_usage = psutil.virtual_memory().percent
-        if memory_usage > 85:
-            logger.warning(f"⚠️ 系统内存使用率较高: {memory_usage}%")
-            
+            raise FileNotFoundError(f"Video file not found: {mov_path}")
         progress.complete_step(0)
-        
-        # 步骤2：提取音频
+
+        # Step 2: Extract Audio
         progress.start_step(1)
         audio_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_audio.wav')
-        
-        try:
-            subprocess.run([
-                'ffmpeg', '-i', mov_path, '-vn', '-acodec', 'pcm_s16le', 
-                '-ar', '16000', '-ac', '1', audio_path, '-y'
-            ], check=True, capture_output=True, text=True)
-            
-            audio_duration = estimate_audio_duration(audio_path)
-            logger.info(f"🎵 [{session_id[:8]}] 音频提取完成 - 时长: {audio_duration:.1f}秒")
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"❌ 音频提取失败: {e}")
-            socketio.emit('error', {'message': '音频提取失败，请检查视频文件格式'}, to=session_id)
-            return
-            
+        subprocess.run(['ffmpeg', '-i', mov_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path, '-y'], check=True, capture_output=True, text=True)
+        audio_duration = estimate_audio_duration(audio_path)
         progress.complete_step(1)
-        
-        # 步骤3：语音转文字
+
+        # Step 3: Transcribe Speech
         progress.start_step(2)
-        
-        try:
-            logger.info(f"🎤 [{session_id[:8]}] 开始语音转录 - 设备: {whisper_device}")
-            
-            # 更新进度
-            for i in range(0, 91, 10):
-                progress.update_step_progress(2, i)
-                time.sleep(0.1)
-            
-            result = whisper_model.transcribe(audio_path, language=None)
-            transcript = str(result["text"])
-            
-            detected_lang = result.get("language", "unknown")
-            logger.info(f"🎤 [{session_id[:8]}] 转录完成 - 语言: {detected_lang}, 字符数: {len(transcript)}")
-            
-        except Exception as e:
-            logger.error(f"❌ 语音转录失败: {e}")
-            socketio.emit('error', {'message': f'语音转录失败: {str(e)}'}, to=session_id)
-            return
-            
+        result = whisper_model.transcribe(audio_path, language=None)
+        transcript = str(result["text"])
+        detected_lang = result.get("language", "unknown")
         progress.complete_step(2)
-        
-        # 步骤4：处理参考文档
+
+        # Step 4: Process Reference Documents
         progress.start_step(3)
         doc_texts = []
-        
-        # 处理文本输入（作为背景信息）
-        if text_input and text_input.strip():
-            formatted_text = f"## 会议背景信息\n\n{text_input.strip()}"
-            doc_texts.append(formatted_text)
-            logger.info(f"📝 [{session_id[:8]}] 添加背景信息: {len(text_input.strip())} 字符")
-        
-        # 处理上传的文档文件
         pdf_files_for_image_analysis = []
         total_docs = len(doc_files)
         for i, doc_info in enumerate(doc_files):
-            original_filename = doc_info['original_filename']
-            saved_path = doc_info['saved_path']
+            original_filename, saved_path = doc_info['original_filename'], doc_info['saved_path']
+            progress.steps[3]['description'] = f"Processing {i+1}/{total_docs}: {original_filename}"
+            progress.emit_progress()
             
-            # 更新进度描述和百分比
-            progress.steps[3]['description'] = f"正在处理 {i + 1}/{total_docs}: {original_filename}"
-            progress.update_step_progress(3, int(((i + 1) / total_docs) * 100))
-
-            try:
-                file_ext = os.path.splitext(original_filename)[1].lower()
-                if file_ext == '.pdf':
-                    pdf_files_for_image_analysis.append(saved_path)
-                
-                text = extract_text_from_file(saved_path)
-                if text:
-                    # 为每个文档添加标识
-                    doc_type = {
-                        '.pdf': 'PDF文档',
-                        '.doc': 'Word文档',
-                        '.docx': 'Word文档',
-                        '.md': 'Markdown文档',
-                        '.txt': '文本文档'
-                    }.get(file_ext, '文档')
-                    
-                    formatted_text = f"## 参考文档：{original_filename} ({doc_type})\n\n{text}"
-                    doc_texts.append(formatted_text)
-                    logger.info(f"📄 [{session_id[:8]}] 处理{doc_type}: {original_filename}, 提取 {len(text)} 字符")
-            except Exception as e:
-                logger.warning(f"⚠️ [{session_id[:8]}] 文档处理失败: {original_filename}, 错误: {str(e)}")
-        
-        progress.steps[3]['description'] = f"共处理 {total_docs} 个文档"
-        logger.info(f"📚 [{session_id[:8]}] 参考文档处理完成 - 共 {len(doc_texts)} 个资料")
+            text = extract_text_from_file(saved_path)
+            if text:
+                doc_texts.append(f"## Reference: {original_filename}\n\n{text}")
+            if original_filename.lower().endswith('.pdf'):
+                pdf_files_for_image_analysis.append(saved_path)
         progress.complete_step(3)
 
-        # 步骤5: 分析文档中的图表
+        # Step 5: Analyze Images in PDFs
         progress.start_step(4)
-        image_analysis_results = []
-        if ai_provider == 'openai': # 仅当使用OpenAI时执行
+        if ai_provider == 'openai':
+            image_analysis_results = []
             for pdf_path in pdf_files_for_image_analysis:
                 image_analysis_results.extend(analyze_pdf_images(pdf_path, ai_provider))
-        
-        if image_analysis_results:
-            doc_texts.extend(image_analysis_results)
-            logger.info(f"🖼️ [{session_id[:8]}] 图表分析完成 - 新增 {len(image_analysis_results)} 条分析结果")
+            if image_analysis_results:
+                doc_texts.extend(image_analysis_results)
         progress.complete_step(4)
+
+        # Step 6: AI Correction
+        corrected_transcript = advanced_transcription_correction(transcript, context_input, doc_texts, progress, 5, ai_provider, model)
         
-        # 步骤6：AI智能纠错
-        corrected_transcript = advanced_transcription_correction(transcript, doc_texts, progress, 5, ai_provider)
+        # Step 7: Generate Summary
+        meeting_summary = generate_meeting_summary(corrected_transcript, context_input, doc_texts, progress, 6, ai_provider, model)
         
-        # 步骤7：生成会议纪要
-        meeting_summary = generate_meeting_summary(corrected_transcript, doc_texts, progress, 6, ai_provider)
-        
-        # 步骤8：生成文件
+        # Step 8: Generate Files
         progress.start_step(7)
         
-        # 生成原始转录文件
+        base_name = os.path.splitext(video_filename)[0]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Generate raw transcript file
         raw_transcript_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_raw_transcript.md')
         with open(raw_transcript_path, 'w', encoding='utf-8') as f:
             f.write(f'# 原始语音转录\n\n')
-            f.write(f'**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n')
+            f.write(f'**生成时间**: {now_str}\n')
             f.write(f'**处理设备**: {whisper_device.upper()}\n')
             f.write(f'**检测语言**: {detected_lang}\n')
             f.write(f'**音频时长**: {audio_duration:.1f}秒\n\n')
             f.write(f'## 转录内容\n\n{transcript}\n')
-        
-        # 生成纠正后的转录文件
+
+        # Generate corrected transcript file
         corrected_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_corrected_transcript.md')
         with open(corrected_path, 'w', encoding='utf-8') as f:
             f.write(f'# AI修正后的会议转录\n\n')
-            f.write(f'**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n')
-            f.write(f'**处理设备**: {whisper_device.upper()}\n')
-            f.write(f'**检测语言**: {detected_lang}\n')
-            f.write(f'**AI服务**: {ai_provider.upper()}\n')
+            f.write(f'**生成时间**: {now_str}\n')
+            f.write(f'**AI模型**: {model}\n')
             f.write(f'**音频时长**: {audio_duration:.1f}秒\n\n')
             f.write(f'## 修正后的转录内容\n\n{corrected_transcript}\n')
-        
-        # 生成完整的会议报告
+
+        # Generate full meeting report
         report_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_meeting_report.md')
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(f'# 会议纪要报告\n\n')
-            f.write(f'**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n')
-            f.write(f'**处理设备**: {whisper_device.upper()}\n')
-            f.write(f'**检测语言**: {detected_lang}\n')
-            f.write(f'**AI服务**: {ai_provider.upper()}\n')
+            f.write(f'**生成时间**: {now_str}\n')
+            f.write(f'**AI模型**: {model}\n')
             f.write(f'**音频时长**: {audio_duration:.1f}秒\n')
-            f.write(f'**参考资料**: {len(doc_texts)} 个文档/背景信息\n\n')
+            f.write(f'**参考资料**: {len(doc_texts)} 个\n\n')
             
-            # 如果有参考文档，显示概览
             if doc_texts:
                 f.write(f'## 参考资料概览\n\n')
                 for i, doc in enumerate(doc_texts, 1):
-                    # 提取文档标题（第一行）
                     first_line = doc.split('\n')[0] if doc else '未知文档'
                     f.write(f'{i}. {first_line.replace("##", "").strip()}\n')
                 f.write(f'\n---\n\n')
             
             f.write(f'{meeting_summary["summary"]}\n\n')
             f.write(f'---\n\n## 附录：AI修正后完整记录\n\n{corrected_transcript}\n')
-        
+
         progress.complete_step(7)
-        
-        # 通知处理完成
+
+        # Final step: Notify client
         total_time = time.time() - start_time
-        logger.info(f"🎉 [{session_id[:8]}] 处理完成! 总耗时: {total_time:.1f}秒")
+        logger.info(f"🎉 [{session_id[:8]}] Processing complete! Total time: {total_time:.1f}s")
         
         socketio.emit('processing_complete', {
             'raw_transcript_path': raw_transcript_path,
@@ -843,12 +705,13 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
             'processing_time': total_time,
             'audio_duration': audio_duration,
             'detected_language': detected_lang,
-            'ai_provider': ai_provider
+            'ai_provider': ai_provider,
+            'model': model
         }, to=session_id)
-        
+
     except Exception as e:
-        logger.error(f"💥 [{session_id[:8]}] 处理错误: {str(e)}")
-        socketio.emit('error', {'message': f'处理错误: {str(e)}'}, to=session_id)
+        logger.error(f"💥 [{session_id[:8]}] Processing error: {e}", exc_info=True)
+        socketio.emit('error', {'message': f'An error occurred: {str(e)}'}, to=session_id)
 
 @app.route('/download/<filename>')
 def download_file(filename):
