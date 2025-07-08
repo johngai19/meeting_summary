@@ -1,0 +1,15 @@
+Flask
+openai-whisper
+transformers
+torch
+PyMuPDF
+pytesseract
+Pillow
+ffmpeg-python
+pandas
+openai
+requests
+tabulate
+flask-socketio
+eventlet
+python-dotenv

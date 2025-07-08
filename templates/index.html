@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>智能会议纪要生成器</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎤 智能会议纪要生成器</h1>
+            <p class="subtitle">基于AI的会议转录、纠错和纪要生成工具</p>
+        </header>
+
+        <main>
+            <!-- 上传表单 -->
+            <div class="upload-section" id="uploadSection">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="video">
+                            <i class="icon">📹</i>
+                            会议视频文件 (.mov/.mp4/.avi)
+                        </label>
+                        <input type="file" id="video" name="video" accept="video/*" required />
+                        <div class="file-info" id="videoInfo"></div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="docs">
+                            <i class="icon">📄</i>
+                            参考文档 (PDF/DOCX/MD/TXT，可多选)
+                        </label>
+                        <input type="file" id="docs" name="docs" accept=".pdf,.doc,.docx,.md,.txt" multiple />
+                        <div class="file-info" id="docsInfo"></div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="docsText">
+                            <i class="icon">📝</i>
+                            或直接输入参考文档内容
+                        </label>
+                        <textarea id="docsText" name="docsText" rows="6" placeholder="在此输入相关文档内容、会议背景信息等..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="aiProvider">
+                            <i class="icon">🤖</i>
+                            AI服务提供商
+                        </label>
+                        <select id="aiProvider" name="aiProvider">
+                            <option value="openai">OpenAI GPT (需要API密钥)</option>
+                            <option value="ollama">本地Ollama</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="apiKeyGroup">
+                        <label for="apiKey">
+                            <i class="icon">🔑</i>
+                            OpenAI API密钥
+                        </label>
+                        <input type="password" id="apiKey" name="apiKey" placeholder="输入您的OpenAI API密钥" />
+                    </div>
+
+                    <button type="submit" class="submit-btn">
+                        <i class="icon">🚀</i>
+                        开始生成会议纪要
+                    </button>
+                </form>
+            </div>
+
+            <!-- 进度显示 -->
+            <div class="progress-section" id="progressSection" style="display: none;">
+                <h2>处理进度</h2>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-percentage" id="progressPercentage">0%</div>
+                
+                <div class="progress-steps" id="progressSteps">
+                    <!-- 进度步骤将在这里动态显示 -->
+                </div>
+            </div>
+
+            <!-- 结果显示 -->
+            <div class="result-section" id="resultSection" style="display: none;">
+                <h2>处理完成！</h2>
+                <div class="result-downloads">
+                    <a href="#" id="downloadCorrected" class="download-btn">
+                        <i class="icon">📄</i>
+                        下载纠正后的转录文本
+                    </a>
+                    <a href="#" id="downloadReport" class="download-btn">
+                        <i class="icon">📊</i>
+                        下载完整会议报告
+                    </a>
+                </div>
+                <button id="newMeeting" class="new-meeting-btn">
+                    <i class="icon">🆕</i>
+                    处理新会议
+                </button>
+            </div>
+
+            <!-- 错误显示 -->
+            <div class="error-section" id="errorSection" style="display: none;">
+                <h2>处理出错</h2>
+                <div class="error-message" id="errorMessage"></div>
+                <button id="retryBtn" class="retry-btn">
+                    <i class="icon">🔄</i>
+                    重试
+                </button>
+            </div>
+        </main>
+
+        <footer>
+            <p>支持中英文双语识别 | 基于Whisper Medium模型 | 集成OpenAI和Ollama</p>
+        </footer>
+    </div>
+
+    <script>
+        // WebSocket连接
+        const socket = io();
+        let currentSessionId = null;
+
+        // DOM元素
+        const uploadForm = document.getElementById('uploadForm');
+        const uploadSection = document.getElementById('uploadSection');
+        const progressSection = document.getElementById('progressSection');
+        const resultSection = document.getElementById('resultSection');
+        const errorSection = document.getElementById('errorSection');
+        const progressFill = document.getElementById('progressFill');
+        const progressPercentage = document.getElementById('progressPercentage');
+        const progressSteps = document.getElementById('progressSteps');
+        const videoInput = document.getElementById('video');
+        const docsInput = document.getElementById('docs');
+        const videoInfo = document.getElementById('videoInfo');
+        const docsInfo = document.getElementById('docsInfo');
+        const aiProvider = document.getElementById('aiProvider');
+        const apiKeyGroup = document.getElementById('apiKeyGroup');
+        const downloadCorrected = document.getElementById('downloadCorrected');
+        const downloadReport = document.getElementById('downloadReport');
+        const newMeetingBtn = document.getElementById('newMeeting');
+        const retryBtn = document.getElementById('retryBtn');
+        const errorMessage = document.getElementById('errorMessage');
+
+        // 文件信息显示
+        videoInput.addEventListener('change', function() {
+            const file = this.files[0];
+            if (file) {
+                const size = (file.size / 1024 / 1024).toFixed(2);
+                videoInfo.textContent = `${file.name} (${size} MB)`;
+            }
+        });
+
+        docsInput.addEventListener('change', function() {
+            const files = Array.from(this.files);
+            if (files.length > 0) {
+                const fileNames = files.map(f => f.name).join(', ');
+                const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+                const size = (totalSize / 1024 / 1024).toFixed(2);
+                docsInfo.textContent = `${files.length}个文件: ${fileNames} (${size} MB)`;
+            }
+        });
+
+        // AI服务提供商选择
+        aiProvider.addEventListener('change', function() {
+            if (this.value === 'openai') {
+                apiKeyGroup.style.display = 'block';
+            } else {
+                apiKeyGroup.style.display = 'none';
+            }
+        });
+
+        // 表单提交
+        uploadForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            // 验证视频文件
+            if (!videoInput.files.length) {
+                showError('请选择视频文件');
+                return;
+            }
+            
+            const formData = new FormData(this);
+            
+            try {
+                const response = await fetch('/process', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.status === 'processing') {
+                    currentSessionId = result.session_id;
+                    showProgressSection();
+                } else {
+                    showError(result.error || '处理请求失败');
+                }
+            } catch (error) {
+                showError('网络错误: ' + error.message);
+            }
+        });
+
+        // WebSocket事件监听
+        socket.on('progress_update', function(data) {
+            updateProgress(data);
+        });
+
+        socket.on('processing_complete', function(data) {
+            showResult(data);
+        });
+
+        socket.on('error', function(data) {
+            showError(data.message);
+        });
+
+        // 显示进度
+        function showProgressSection() {
+            uploadSection.style.display = 'none';
+            progressSection.style.display = 'block';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+        }
+
+        // 更新进度
+        function updateProgress(data) {
+            const percentage = Math.round(data.percentage);
+            progressFill.style.width = percentage + '%';
+            progressPercentage.textContent = percentage + '%';
+            
+            // 更新步骤显示
+            progressSteps.innerHTML = '';
+            data.steps.forEach((step, index) => {
+                const stepDiv = document.createElement('div');
+                stepDiv.className = 'progress-step';
+                stepDiv.classList.add('status-' + step.status);
+                
+                const icon = step.status === 'completed' ? '✅' : 
+                           step.status === 'processing' ? '⏳' : '⏸️';
+                
+                stepDiv.innerHTML = `
+                    <div class="step-icon">${icon}</div>
+                    <div class="step-content">
+                        <div class="step-name">${step.name}</div>
+                        <div class="step-description">${step.description}</div>
+                    </div>
+                `;
+                
+                progressSteps.appendChild(stepDiv);
+            });
+        }
+
+        // 显示结果
+        function showResult(data) {
+            uploadSection.style.display = 'none';
+            progressSection.style.display = 'none';
+            resultSection.style.display = 'block';
+            errorSection.style.display = 'none';
+            
+            // 设置下载链接
+            const correctedFilename = data.corrected_transcript_path.split('/').pop();
+            const reportFilename = data.report_path.split('/').pop();
+            
+            downloadCorrected.href = `/download/${correctedFilename}`;
+            downloadReport.href = `/download/${reportFilename}`;
+        }
+
+        // 显示错误
+        function showError(message) {
+            uploadSection.style.display = 'none';
+            progressSection.style.display = 'none';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'block';
+            
+            errorMessage.textContent = message;
+        }
+
+        // 新建会议
+        newMeetingBtn.addEventListener('click', function() {
+            uploadSection.style.display = 'block';
+            progressSection.style.display = 'none';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+            
+            // 重置表单
+            uploadForm.reset();
+            videoInfo.textContent = '';
+            docsInfo.textContent = '';
+            currentSessionId = null;
+        });
+
+        // 重试
+        retryBtn.addEventListener('click', function() {
+            uploadSection.style.display = 'block';
+            progressSection.style.display = 'none';
+            resultSection.style.display = 'none';
+            errorSection.style.display = 'none';
+        });
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 初始状态设置
+            if (aiProvider.value === 'ollama') {
+                apiKeyGroup.style.display = 'none';
+            }
+        });
+    </script>
+</body>
+</html>
