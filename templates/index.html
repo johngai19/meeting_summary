@@ -12,9 +12,29 @@
         <header>
             <h1>🎤 智能会议纪要生成器</h1>
             <p class="subtitle">基于AI的会议转录、纠错和纪要生成工具</p>
+            <div class="system-info">
+                <span class="device-info">🖥️ 转录设备: {{ whisper_device.upper() }}</span>
+                <span class="config-status">
+                    {% if config_status.openai_configured %}
+                        <span class="status-ok">✅ OpenAI已配置</span>
+                    {% else %}
+                        <span class="status-warning">⚠️ OpenAI未配置</span>
+                    {% endif %}
+                    {% if config_status.ollama_available %}
+                        <span class="status-ok">✅ Ollama可用</span>
+                    {% else %}
+                        <span class="status-warning">⚠️ Ollama不可用</span>
+                    {% endif %}
+                </span>
+            </div>
         </header>
 
         <main>
+            <!-- 连接状态指示器 -->
+            <div class="connection-status" id="connectionStatus">
+                <span id="connectionIndicator">🔴 连接中...</span>
+            </div>
+
             <!-- 上传表单 -->
             <div class="upload-section" id="uploadSection">
                 <form id="uploadForm" enctype="multipart/form-data">
@@ -50,20 +70,48 @@
                             AI服务提供商
                         </label>
                         <select id="aiProvider" name="aiProvider">
-                            <option value="openai">OpenAI GPT (需要API密钥)</option>
-                            <option value="ollama">本地Ollama</option>
+                            {% if config_status.openai_configured %}
+                                <option value="openai">OpenAI / OpenRouter</option>
+                            {% endif %}
+                            {% if config_status.ollama_available %}
+                                <option value="ollama">本地Ollama</option>
+                            {% endif %}
                         </select>
+                        <div class="form-help">
+                            {% if not config_status.openai_configured and not config_status.ollama_available %}
+                                <span class="error">❌ 未配置任何AI服务，请联系管理员</span>
+                            {% elif config_status.openai_configured and not config_status.ollama_available %}
+                                <span class="info">使用OpenAI服务进行AI处理</span>
+                            {% elif not config_status.openai_configured and config_status.ollama_available %}
+                                <span class="info">使用本地Ollama模型进行AI处理</span>
+                            {% else %}
+                                <span class="info">可选择OpenAI或本地Ollama服务</span>
+                            {% endif %}
+                        </div>
                     </div>
 
-                    <div class="form-group" id="apiKeyGroup">
-                        <label for="apiKey">
-                            <i class="icon">🔑</i>
-                            OpenAI API密钥
-                        </label>
-                        <input type="password" id="apiKey" name="apiKey" placeholder="输入您的OpenAI API密钥" />
+                    <!-- Ollama 模型信息 -->
+                    {% if config_status.ollama_available %}
+                    <div class="ai-info" id="ollamaInfo" style="display: none;">
+                        <div class="form-group">
+                            <label>
+                                <i class="icon">🦙</i>
+                                可用的Ollama模型
+                            </label>
+                            <div class="model-list">
+                                {% for model in ollama_models %}
+                                <div class="model-item">
+                                    <span class="model-name">{{ model.name }}</span>
+                                    <span class="model-size">({{ model.size }})</span>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
                     </div>
+                    {% endif %}
 
-                    <button type="submit" class="submit-btn">
+                    <button type="submit" class="submit-btn" 
+                            {% if not config_status.openai_configured and not config_status.ollama_available %}disabled{% endif %}>
                         <i class="icon">🚀</i>
                         开始生成会议纪要
                     </button>
@@ -73,55 +121,126 @@
             <!-- 进度显示 -->
             <div class="progress-section" id="progressSection" style="display: none;">
                 <h2>处理进度</h2>
+                <div class="session-info">
+                    <span>会话ID: <code id="sessionIdDisplay">--</code></span>
+                </div>
                 <div class="progress-bar">
                     <div class="progress-fill" id="progressFill"></div>
                 </div>
-                <div class="progress-percentage" id="progressPercentage">0%</div>
+                <div class="progress-info">
+                    <div class="progress-percentage" id="progressPercentage">0%</div>
+                    <div class="time-info">
+                        <span id="elapsedTime">已用时: 0秒</span>
+                        <span id="remainingTime" style="display: none;">预计剩余: --</span>
+                    </div>
+                </div>
                 
                 <div class="progress-steps" id="progressSteps">
                     <!-- 进度步骤将在这里动态显示 -->
+                </div>
+
+                <!-- 调试信息 -->
+                <div class="debug-info" id="debugInfo" style="display: none;">
+                    <h3>调试信息</h3>
+                    <pre id="debugLog"></pre>
                 </div>
             </div>
 
             <!-- 结果显示 -->
             <div class="result-section" id="resultSection" style="display: none;">
-                <h2>处理完成！</h2>
+                <h2>🎉 处理完成！</h2>
+                <div class="result-info">
+                    <div class="result-stats">
+                        <div class="stat-item">
+                            <i class="icon">⏱️</i>
+                            <span>处理时间</span>
+                            <span id="processingTime">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <i class="icon">🎵</i>
+                            <span>音频时长</span>
+                            <span id="audioDuration">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <i class="icon">🖥️</i>
+                            <span>处理设备</span>
+                            <span>{{ whisper_device.upper() }}</span>
+                        </div>
+                        <div class="stat-item">
+                            <i class="icon">🤖</i>
+                            <span>AI服务</span>
+                            <span id="aiService">--</span>
+                        </div>
+                        <div class="stat-item">
+                            <i class="icon">🌍</i>
+                            <span>检测语言</span>
+                            <span id="detectedLang">--</span>
+                        </div>
+                    </div>
+                </div>
                 <div class="result-downloads">
-                    <a href="#" id="downloadCorrected" class="download-btn">
+                    <a href="#" id="downloadRaw" class="download-btn" style="display: none;">
                         <i class="icon">📄</i>
-                        下载纠正后的转录文本
+                        下载原始转录文本
                     </a>
-                    <a href="#" id="downloadReport" class="download-btn">
+                    <a href="#" id="downloadCorrected" class="download-btn" style="display: none;">
+                        <i class="icon">✨</i>
+                        下载AI纠正后转录
+                    </a>
+                    <a href="#" id="downloadReport" class="download-btn" style="display: none;">
                         <i class="icon">📊</i>
                         下载完整会议报告
                     </a>
                 </div>
-                <button id="newMeeting" class="new-meeting-btn">
-                    <i class="icon">🆕</i>
-                    处理新会议
-                </button>
+                <div class="result-actions">
+                    <button id="newMeeting" class="new-meeting-btn">
+                        <i class="icon">🆕</i>
+                        处理新会议
+                    </button>
+                    <button id="toggleDebug" class="debug-btn">
+                        <i class="icon">🔍</i>
+                        显示调试信息
+                    </button>
+                </div>
             </div>
 
             <!-- 错误显示 -->
             <div class="error-section" id="errorSection" style="display: none;">
-                <h2>处理出错</h2>
+                <h2>❌ 处理出错</h2>
                 <div class="error-message" id="errorMessage"></div>
-                <button id="retryBtn" class="retry-btn">
-                    <i class="icon">🔄</i>
-                    重试
-                </button>
+                <div class="error-details" id="errorDetails" style="display: none;">
+                    <h3>错误详情</h3>
+                    <pre id="errorLog"></pre>
+                </div>
+                <div class="error-actions">
+                    <button id="retryBtn" class="retry-btn">
+                        <i class="icon">🔄</i>
+                        重试
+                    </button>
+                    <button id="backToFormBtn" class="back-btn">
+                        <i class="icon">⬅️</i>
+                        返回表单
+                    </button>
+                    <button id="toggleErrorDetails" class="debug-btn">
+                        <i class="icon">🔍</i>
+                        显示错误详情
+                    </button>
+                </div>
             </div>
         </main>
 
         <footer>
-            <p>支持中英文双语识别 | 基于Whisper Medium模型 | 集成OpenAI和Ollama</p>
+            <p>支持中英文双语识别 | 基于Whisper Medium模型 | 集成OpenAI/OpenRouter和Ollama</p>
         </footer>
     </div>
 
     <script>
-        // WebSocket连接
-        const socket = io();
+        // 全局变量
+        let socket = null;
         let currentSessionId = null;
+        let startTime = null;
+        let progressInterval = null;
+        let debugMode = false;
 
         // DOM元素
         const uploadForm = document.getElementById('uploadForm');
@@ -129,6 +248,9 @@
         const progressSection = document.getElementById('progressSection');
         const resultSection = document.getElementById('resultSection');
         const errorSection = document.getElementById('errorSection');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const connectionIndicator = document.getElementById('connectionIndicator');
+        const sessionIdDisplay = document.getElementById('sessionIdDisplay');
         const progressFill = document.getElementById('progressFill');
         const progressPercentage = document.getElementById('progressPercentage');
         const progressSteps = document.getElementById('progressSteps');
@@ -137,19 +259,97 @@
         const videoInfo = document.getElementById('videoInfo');
         const docsInfo = document.getElementById('docsInfo');
         const aiProvider = document.getElementById('aiProvider');
-        const apiKeyGroup = document.getElementById('apiKeyGroup');
+        const ollamaInfo = document.getElementById('ollamaInfo');
+        const downloadRaw = document.getElementById('downloadRaw');
         const downloadCorrected = document.getElementById('downloadCorrected');
         const downloadReport = document.getElementById('downloadReport');
         const newMeetingBtn = document.getElementById('newMeeting');
         const retryBtn = document.getElementById('retryBtn');
+        const backToFormBtn = document.getElementById('backToFormBtn');
         const errorMessage = document.getElementById('errorMessage');
+        const elapsedTime = document.getElementById('elapsedTime');
+        const remainingTime = document.getElementById('remainingTime');
+        const processingTime = document.getElementById('processingTime');
+        const audioDuration = document.getElementById('audioDuration');
+        const aiService = document.getElementById('aiService');
+        const detectedLang = document.getElementById('detectedLang');
+        const debugInfo = document.getElementById('debugInfo');
+        const debugLog = document.getElementById('debugLog');
+        const errorDetails = document.getElementById('errorDetails');
+        const errorLog = document.getElementById('errorLog');
+        const toggleDebug = document.getElementById('toggleDebug');
+        const toggleErrorDetails = document.getElementById('toggleErrorDetails');
+
+        // 调试函数
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
+            console.log(logMessage);
+            
+            if (debugLog) {
+                debugLog.textContent += logMessage + '\n';
+                debugLog.scrollTop = debugLog.scrollHeight;
+            }
+        }
+
+        // 初始化WebSocket连接
+        function initSocket() {
+            try {
+                socket = io();
+                log('正在连接WebSocket服务器...');
+                
+                socket.on('connect', function() {
+                    log('WebSocket连接成功');
+                    connectionIndicator.textContent = '🟢 已连接';
+                    connectionIndicator.className = 'connected';
+                });
+
+                socket.on('disconnect', function() {
+                    log('WebSocket连接断开', 'warning');
+                    connectionIndicator.textContent = '🔴 连接断开';
+                    connectionIndicator.className = 'disconnected';
+                });
+
+                socket.on('connect_error', function(error) {
+                    log(`WebSocket连接错误: ${error}`, 'error');
+                    connectionIndicator.textContent = '🔴 连接错误';
+                    connectionIndicator.className = 'error';
+                });
+
+                socket.on('progress_update', function(data) {
+                    log(`收到进度更新: ${JSON.stringify(data)}`);
+                    updateProgress(data);
+                });
+
+                socket.on('processing_complete', function(data) {
+                    log(`处理完成: ${JSON.stringify(data)}`);
+                    stopProgressTimer();
+                    showResult(data);
+                });
+
+                socket.on('error', function(data) {
+                    log(`收到错误: ${JSON.stringify(data)}`, 'error');
+                    stopProgressTimer();
+                    showError(data.message, data);
+                });
+
+            } catch (error) {
+                log(`WebSocket初始化失败: ${error}`, 'error');
+                connectionIndicator.textContent = '🔴 初始化失败';
+            }
+        }
 
         // 文件信息显示
         videoInput.addEventListener('change', function() {
             const file = this.files[0];
             if (file) {
                 const size = (file.size / 1024 / 1024).toFixed(2);
-                videoInfo.textContent = `${file.name} (${size} MB)`;
+                videoInfo.innerHTML = `
+                    <strong>${file.name}</strong><br>
+                    大小: ${size} MB<br>
+                    类型: ${file.type}
+                `;
+                log(`选择视频文件: ${file.name} (${size}MB)`);
             }
         });
 
@@ -159,30 +359,50 @@
                 const fileNames = files.map(f => f.name).join(', ');
                 const totalSize = files.reduce((sum, f) => sum + f.size, 0);
                 const size = (totalSize / 1024 / 1024).toFixed(2);
-                docsInfo.textContent = `${files.length}个文件: ${fileNames} (${size} MB)`;
+                docsInfo.innerHTML = `
+                    <strong>${files.length}个文档文件:</strong><br>
+                    ${fileNames}<br>
+                    总大小: ${size} MB
+                `;
+                log(`选择文档文件: ${files.length}个文件 (${size}MB)`);
             }
         });
 
         // AI服务提供商选择
         aiProvider.addEventListener('change', function() {
-            if (this.value === 'openai') {
-                apiKeyGroup.style.display = 'block';
-            } else {
-                apiKeyGroup.style.display = 'none';
+            if (this.value === 'ollama' && ollamaInfo) {
+                ollamaInfo.style.display = 'block';
+            } else if (ollamaInfo) {
+                ollamaInfo.style.display = 'none';
             }
+            log(`选择AI服务: ${this.value}`);
         });
 
         // 表单提交
         uploadForm.addEventListener('submit', async function(e) {
             e.preventDefault();
+            log('开始提交表单...');
+            
+            // 验证WebSocket连接
+            if (!socket || !socket.connected) {
+                showError('WebSocket连接未建立，请刷新页面重试');
+                return;
+            }
             
             // 验证视频文件
             if (!videoInput.files.length) {
                 showError('请选择视频文件');
                 return;
             }
+
+            // 验证AI服务配置
+            if (!aiProvider.value) {
+                showError('请选择AI服务提供商');
+                return;
+            }
             
             const formData = new FormData(this);
+            log(`提交表单数据 - AI服务: ${aiProvider.value}`);
             
             try {
                 const response = await fetch('/process', {
@@ -191,29 +411,25 @@
                 });
                 
                 const result = await response.json();
+                log(`服务器响应: ${JSON.stringify(result)}`);
                 
                 if (response.ok && result.status === 'processing') {
                     currentSessionId = result.session_id;
+                    log(`获得会话ID: ${currentSessionId}`);
+                    
+                    // 加入WebSocket房间
+                    socket.emit('join', currentSessionId);
+                    
+                    startTime = Date.now();
                     showProgressSection();
+                    startProgressTimer();
                 } else {
-                    showError(result.error || '处理请求失败');
+                    showError(result.error || '处理请求失败', result);
                 }
             } catch (error) {
+                log(`网络请求失败: ${error}`, 'error');
                 showError('网络错误: ' + error.message);
             }
-        });
-
-        // WebSocket事件监听
-        socket.on('progress_update', function(data) {
-            updateProgress(data);
-        });
-
-        socket.on('processing_complete', function(data) {
-            showResult(data);
-        });
-
-        socket.on('error', function(data) {
-            showError(data.message);
         });
 
         // 显示进度
@@ -222,34 +438,91 @@
             progressSection.style.display = 'block';
             resultSection.style.display = 'none';
             errorSection.style.display = 'none';
+            
+            if (currentSessionId) {
+                sessionIdDisplay.textContent = currentSessionId.substring(0, 8) + '...';
+            }
+            
+            log('显示进度页面');
+        }
+
+        // 开始进度计时器
+        function startProgressTimer() {
+            progressInterval = setInterval(function() {
+                if (startTime) {
+                    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                    elapsedTime.textContent = `已用时: ${elapsed}秒`;
+                }
+            }, 1000);
+            log('启动进度计时器');
+        }
+
+        // 停止进度计时器
+        function stopProgressTimer() {
+            if (progressInterval) {
+                clearInterval(progressInterval);
+                progressInterval = null;
+                log('停止进度计时器');
+            }
         }
 
         // 更新进度
         function updateProgress(data) {
-            const percentage = Math.round(data.percentage);
-            progressFill.style.width = percentage + '%';
-            progressPercentage.textContent = percentage + '%';
-            
-            // 更新步骤显示
-            progressSteps.innerHTML = '';
-            data.steps.forEach((step, index) => {
-                const stepDiv = document.createElement('div');
-                stepDiv.className = 'progress-step';
-                stepDiv.classList.add('status-' + step.status);
+            try {
+                const percentage = Math.round(data.percentage || 0);
+                progressFill.style.width = percentage + '%';
+                progressPercentage.textContent = percentage + '%';
                 
-                const icon = step.status === 'completed' ? '✅' : 
-                           step.status === 'processing' ? '⏳' : '⏸️';
+                // 显示预计剩余时间
+                if (data.estimated_remaining_time && data.estimated_remaining_time > 0) {
+                    const remainingSeconds = Math.ceil(data.estimated_remaining_time);
+                    remainingTime.textContent = `预计剩余: ${remainingSeconds}秒`;
+                    remainingTime.style.display = 'inline';
+                } else {
+                    remainingTime.style.display = 'none';
+                }
                 
-                stepDiv.innerHTML = `
-                    <div class="step-icon">${icon}</div>
-                    <div class="step-content">
-                        <div class="step-name">${step.name}</div>
-                        <div class="step-description">${step.description}</div>
-                    </div>
-                `;
+                // 更新步骤显示
+                if (data.steps && Array.isArray(data.steps)) {
+                    progressSteps.innerHTML = '';
+                    data.steps.forEach((step, index) => {
+                        const stepDiv = document.createElement('div');
+                        stepDiv.className = 'progress-step';
+                        stepDiv.classList.add('status-' + step.status);
+                        
+                        const icon = step.status === 'completed' ? '✅' : 
+                                   step.status === 'processing' ? '⏳' : '⏸️';
+                        
+                        let progressBar = '';
+                        if (step.status === 'processing' && step.progress_percentage > 0) {
+                            progressBar = `
+                                <div class="step-progress">
+                                    <div class="step-progress-bar">
+                                        <div class="step-progress-fill" style="width: ${step.progress_percentage}%"></div>
+                                    </div>
+                                    <span class="step-progress-text">${step.progress_percentage}%</span>
+                                </div>
+                            `;
+                        }
+                        
+                        stepDiv.innerHTML = `
+                            <div class="step-icon">${icon}</div>
+                            <div class="step-content">
+                                <div class="step-name">${step.name}</div>
+                                <div class="step-description">${step.description}</div>
+                                ${progressBar}
+                            </div>
+                        `;
+                        
+                        progressSteps.appendChild(stepDiv);
+                    });
+                }
                 
-                progressSteps.appendChild(stepDiv);
-            });
+                log(`进度更新: ${percentage}% - 当前步骤: ${data.current_step}/${data.total_steps}`);
+                
+            } catch (error) {
+                log(`更新进度失败: ${error}`, 'error');
+            }
         }
 
         // 显示结果
@@ -259,26 +532,77 @@
             resultSection.style.display = 'block';
             errorSection.style.display = 'none';
             
-            // 设置下载链接
-            const correctedFilename = data.corrected_transcript_path.split('/').pop();
-            const reportFilename = data.report_path.split('/').pop();
+            log(`显示结果页面: ${JSON.stringify(data)}`);
             
-            downloadCorrected.href = `/download/${correctedFilename}`;
-            downloadReport.href = `/download/${reportFilename}`;
+            // 设置下载链接
+            let downloadCount = 0;
+            
+            if (data.raw_transcript_path) {
+                const rawFilename = data.raw_transcript_path.split('/').pop();
+                downloadRaw.href = `/download/${rawFilename}`;
+                downloadRaw.style.display = 'inline-block';
+                downloadCount++;
+                log(`设置原始转录下载链接: ${rawFilename}`);
+            }
+            
+            if (data.corrected_transcript_path) {
+                const correctedFilename = data.corrected_transcript_path.split('/').pop();
+                downloadCorrected.href = `/download/${correctedFilename}`;
+                downloadCorrected.style.display = 'inline-block';
+                downloadCount++;
+                log(`设置纠正转录下载链接: ${correctedFilename}`);
+            }
+            
+            if (data.report_path) {
+                const reportFilename = data.report_path.split('/').pop();
+                downloadReport.href = `/download/${reportFilename}`;
+                downloadReport.style.display = 'inline-block';
+                downloadCount++;
+                log(`设置报告下载链接: ${reportFilename}`);
+            }
+            
+            // 显示处理统计
+            if (data.processing_time) {
+                processingTime.textContent = `${data.processing_time.toFixed(1)}秒`;
+            }
+            
+            if (data.audio_duration) {
+                const duration = data.audio_duration;
+                const minutes = Math.floor(duration / 60);
+                const seconds = Math.floor(duration % 60);
+                audioDuration.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+            
+            if (data.ai_provider) {
+                aiService.textContent = data.ai_provider.toUpperCase();
+            }
+            
+            if (data.detected_language) {
+                detectedLang.textContent = data.detected_language;
+            }
+            
+            log(`处理完成 - 生成了${downloadCount}个下载文件`);
         }
 
         // 显示错误
-        function showError(message) {
+        function showError(message, details = null) {
             uploadSection.style.display = 'none';
             progressSection.style.display = 'none';
             resultSection.style.display = 'none';
             errorSection.style.display = 'block';
             
             errorMessage.textContent = message;
+            
+            if (details) {
+                errorLog.textContent = JSON.stringify(details, null, 2);
+                log(`错误详情: ${JSON.stringify(details)}`, 'error');
+            }
+            
+            log(`显示错误: ${message}`, 'error');
         }
 
-        // 新建会议
-        newMeetingBtn.addEventListener('click', function() {
+        // 重置表单
+        function resetForm() {
             uploadSection.style.display = 'block';
             progressSection.style.display = 'none';
             resultSection.style.display = 'none';
@@ -286,25 +610,72 @@
             
             // 重置表单
             uploadForm.reset();
-            videoInfo.textContent = '';
-            docsInfo.textContent = '';
+            videoInfo.innerHTML = '';
+            docsInfo.innerHTML = '';
             currentSessionId = null;
-        });
-
-        // 重试
-        retryBtn.addEventListener('click', function() {
-            uploadSection.style.display = 'block';
-            progressSection.style.display = 'none';
-            resultSection.style.display = 'none';
-            errorSection.style.display = 'none';
-        });
-
-        // 初始化
-        document.addEventListener('DOMContentLoaded', function() {
-            // 初始状态设置
-            if (aiProvider.value === 'ollama') {
-                apiKeyGroup.style.display = 'none';
+            startTime = null;
+            stopProgressTimer();
+            
+            // 重置下载链接
+            downloadRaw.style.display = 'none';
+            downloadCorrected.style.display = 'none';
+            downloadReport.style.display = 'none';
+            
+            // 重置AI配置显示
+            if (aiProvider.value === 'ollama' && ollamaInfo) {
+                ollamaInfo.style.display = 'block';
+            } else if (ollamaInfo) {
+                ollamaInfo.style.display = 'none';
             }
+            
+            log('重置表单');
+        }
+
+        // 事件监听器
+        newMeetingBtn.addEventListener('click', resetForm);
+        retryBtn.addEventListener('click', resetForm);
+        backToFormBtn.addEventListener('click', resetForm);
+
+        toggleDebug.addEventListener('click', function() {
+            debugMode = !debugMode;
+            if (debugMode) {
+                debugInfo.style.display = 'block';
+                this.textContent = '🔍 隐藏调试信息';
+            } else {
+                debugInfo.style.display = 'none';
+                this.textContent = '🔍 显示调试信息';
+            }
+        });
+
+        toggleErrorDetails.addEventListener('click', function() {
+            if (errorDetails.style.display === 'none') {
+                errorDetails.style.display = 'block';
+                this.textContent = '🔍 隐藏错误详情';
+            } else {
+                errorDetails.style.display = 'none';
+                this.textContent = '🔍 显示错误详情';
+            }
+        });
+
+        // 页面初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            log('页面加载完成，初始化WebSocket连接...');
+            initSocket();
+            
+            // 初始化AI提供商选择
+            if (aiProvider.value === 'ollama' && ollamaInfo) {
+                ollamaInfo.style.display = 'block';
+            }
+            
+            log('页面初始化完成');
+        });
+
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', function() {
+            if (socket) {
+                socket.disconnect();
+            }
+            stopProgressTimer();
         });
     </script>
 </body>
