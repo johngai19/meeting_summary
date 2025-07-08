@@ -17,7 +17,7 @@ import pytesseract
 from PIL import Image
 import pandas as pd
 import tempfile
-from typing import cast, Optional, Dict, List, Tuple
+from typing import cast, Optional, Dict, List, Tuple, Any
 import logging
 try:
     from dotenv import load_dotenv
@@ -30,6 +30,10 @@ import time
 import re
 from functools import wraps
 import psutil
+import base64
+from io import BytesIO
+from openai.types.chat import ChatCompletionMessageParam
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
@@ -289,8 +293,8 @@ class ProcessingProgress:
             socketio.emit('progress_update', progress_data, to=self.session_id)
 
 @handle_errors(max_retries=3)
-def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 2000) -> Optional[str]:
-    """调用OpenAI API或OpenRouter API"""
+def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 2000, image_base64: Optional[str] = None) -> Optional[str]:
+    """调用OpenAI API或OpenRouter API，支持多模态"""
     try:
         if not openai:
             logger.warning("🚫 OpenAI library not available")
@@ -303,18 +307,37 @@ def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
         used_model = model or OPENAI_MODEL
         logger.info(f"🤖 调用OpenAI API - 模型: {used_model}, 基础URL: {OPENAI_BASE_URL}")
         
-        # 创建客户端
         client = openai.OpenAI(
             api_key=OPENAI_API_KEY,
             base_url=OPENAI_BASE_URL
         )
-        
+
+        messages: List[ChatCompletionMessageParam] = [
+            {"role": "system", "content": "You are a professional meeting assistant specialized in transcription correction and meeting summary generation. Please respond in Chinese."},
+        ]
+
+        if image_base64:
+            # 多模态调用
+            used_model = 'gpt-4o' # 强制使用支持多模态的模型
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_base64}"
+                        }
+                    }
+                ]
+            })
+        else:
+            # 纯文本调用
+            messages.append({"role": "user", "content": prompt})
+
         response = client.chat.completions.create(
             model=used_model,
-            messages=[
-                {"role": "system", "content": "You are a professional meeting assistant specialized in transcription correction and meeting summary generation. Please respond in Chinese."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
             max_tokens=max_tokens,
             temperature=0.7
         )
@@ -369,90 +392,16 @@ def advanced_transcription_correction(transcript: str, reference_docs: List[str]
         # 处理参考文档，分类显示
         reference_content = ""
         if reference_docs:
-            reference_content = f"""
-## 参考背景资料：
-本次会议提供了以下参考资料，请在修正过程中参考这些信息：
-
-"""
+            reference_content = "## 参考背景资料：\n"
             for i, doc in enumerate(reference_docs, 1):
-                doc_preview = doc[:800] + "..." if len(doc) > 800 else doc
-                reference_content += f"""
-### 参考资料 {i}：
-{doc_preview}
-
-"""
+                doc_preview = doc[:1500] + "..." if len(doc) > 1500 else doc
+                reference_content += f"\n### 参考资料 {i}：\n{doc_preview}\n"
         
         # 构建专业的提示词
-        correction_prompt = f"""
-## 角色定位
-你是一名**专业的会议记录修订专家**，负责将语音转写的原始文本清理、润色并结构化成可读性强、逻辑清晰的会议纪要。
-
----
-
-## 输入变量
-- `transcript`：原始语音转文字识别结果（纯文本）
-- `reference_docs`：与会议主题相关的参考背景资料
-
----
-
-## 修正与优化步骤
-
-### 1. 语言清理
-- **去除语气词**：如"嗯"、"啊"、"呃"、"那个"、"这个"、"就是说"、"然后呢"等
-- **删除重复与冗余**：去掉重复词语、废话、卡顿或识别噪音
-- **消除识别错误**：修正同音字、近音字及乱码
-
-### 2. 语法与表达
-- **校正语法错误**：调整主谓宾、标点使用、断句位置
-- **提升专业性**：丰富词汇，避免口语化表达，句式简洁凝练
-- **统一时态与语态**：保持全文一致
-
-### 3. 内容结构化
-- **分段与标题**：根据议题或发言人分段，并为每一部分添加合适的二级标题
-- **添加列表与要点**：将重要决策、行动项、问题与结论，用无序或有序列表呈现
-- **标注关键信息**：如"决策"、"待办事项"、"问题"、"负责人"等，用加粗突出
-
-### 4. 专业术语标准化
-- **对照参考资料**：将术语与参考文档中的标准保持一致，修正错误用词
-- **保持一致性**：确保同一概念在全文中使用统一的术语表达
-
-### 5. 上下文与逻辑
-- **连贯性检查**：确保前后逻辑流畅，必要时补充过渡语句
-- **背景补充**：结合参考资料中的关键信息，对容易误解或遗漏的部分进行注释或补充
-
----
-
-{reference_content}
-
-## 原始语音转文字内容：
-{transcript}
-
----
-
-## 输出要求
-请按照以下格式输出修正后的内容：
-
-```markdown
-# 会议内容（修正版）
-
-## 主要讨论内容
-### 议题一：[根据实际内容确定]
-- **发言要点**：
-  1. ...
-  2. ...
-
-### 议题二：[根据实际内容确定]
-- **关键决策**：...
-- **行动项目**：...
-
-## 重要信息汇总
-- **决策事项**：...
-- **待办任务**：...
-- **关键数据**：...
-```
-
-请提供修正后的会议内容：
-"""
+        correction_prompt = correction_prompt_template.format(
+            transcript=transcript,
+            reference_docs=reference_content
+        )
         
         progress.update_step_progress(step_index, 30)
         
@@ -485,128 +434,15 @@ def generate_meeting_summary(corrected_transcript: str, reference_docs: List[str
         # 构建参考文档展示
         reference_content = ""
         if reference_docs:
-            reference_content = f"""
-## 参考背景资料：
-本次会议基于以下参考资料进行讨论，请在生成纪要时体现这些背景信息的影响：
-
-"""
+            reference_content = "## 参考背景资料：\n"
             for i, doc in enumerate(reference_docs, 1):
-                doc_preview = doc[:600] + "..." if len(doc) > 600 else doc
-                reference_content += f"""
-### 参考资料 {i}：
-{doc_preview}
+                doc_preview = doc[:1500] + "..." if len(doc) > 1500 else doc
+                reference_content += f"\n### 参考资料 {i}：\n{doc_preview}\n"
 
-"""
-        
-        summary_prompt = f"""
-## 角色定位
-你是一名**资深的会议纪要专家**，负责将修正后的会议转录内容转化为专业、结构化、具有实用价值的会议纪要。
-
----
-
-## 输入变量
-- `corrected_transcript`：已修正的会议转录内容
-- `reference_docs`：与会议主题相关的参考背景资料
-
----
-
-## 分析与生成步骤
-
-### 1. 内容深度分析
-- **识别核心主题**：确定会议的主要目标和讨论重点
-- **分析讨论层次**：理解议题的逻辑关系和重要性排序
-- **提取关键观点**：识别重要意见、争议点和达成的共识
-- **发现隐含信息**：注意暗示的问题、机会和未明确表达的需求
-
-### 2. 信息提取与整理
-- **事实数据收集**：提取具体的数字、时间、地点、人员信息
-- **决策识别**：区分已确定的决策和待定的倾向
-- **行动项梳理**：整理具体的任务、责任人和时间要求
-- **优先级判断**：按重要性和紧急性对内容进行排序
-
-### 3. 结构化处理
-- **逻辑组织**：按照议题相关性和重要性重新组织内容
-- **分类标注**：明确区分决策、行动项、问题、结论等不同类型信息
-- **层次建立**：创建清晰的信息层次结构
-
----
-
-{reference_content}
-
-## 会议转录内容（已修正）：
-{corrected_transcript}
-
----
-
-## 输出格式要求
-请按照以下专业格式生成会议纪要：
-
-```markdown
-# 会议纪要
-
-## 1. 会议背景
-> 基于实际内容分析的会议目的、背景和参与情况
-
-## 2. 主要讨论内容
-### 2.1 议题一：[根据实际内容确定标题]
-- **发言要点**：
-  1. ...
-  2. ...
-- **关键观点**：...
-- **争议点**：...
-
-### 2.2 议题二：[根据实际内容确定标题]
-- **讨论要点**：...
-- **技术细节**：...
-
-## 3. 决策与共识
-| 决策项 | 具体内容 | 影响范围 |
-| ------ | -------- | -------- |
-| ...    | ...      | ...      |
-
-## 4. 行动计划
-| 行动项 | 负责人 | 完成时间 | 优先级 |
-| ------ | ------ | -------- | ------ |
-| ...    | ...    | ...      | ...    |
-
-## 5. 重要信息汇总
-- **关键数据**：...
-- **时间节点**：...
-- **相关人员**：...
-- **技术要点**：...
-
-## 6. 待解决问题
-1. ...
-2. ...
-
-## 7. 跟进事项
-- **下次会议**：...
-- **需要确认**：...
-- **后续沟通**：...
-
-## 8. 术语说明（如有必要）
-| 术语 | 含义 |
-| ---- | ---- |
-| ...  | ...  |
-
-## 9. 附录
-- **参考文档**：基于提供的参考资料
-- **会议时长**：...
-- **参与人数**：...
-```
-
----
-
-## 特别要求
-1. **避免简单复制**：不要直接复制转录内容，而是基于理解进行提炼和重组
-2. **突出实用价值**：重点关注会议的实际成果、决策和行动计划
-3. **体现背景关联**：如果有参考资料，要体现其与会议讨论的关联性
-4. **保持专业性**：使用商务语言，避免口语化表达
-5. **确保逻辑性**：内容组织要有清晰的逻辑结构
-6. **注重可操作性**：行动项要具体明确，便于后续执行
-
-请生成专业的会议纪要：
-"""
+        summary_prompt = summary_prompt_template.format(
+            corrected_transcript=corrected_transcript,
+            reference_docs=reference_content
+        )
         
         progress.update_step_progress(step_index, 30)
         
@@ -747,14 +583,22 @@ def process_meeting():
     try:
         # 获取表单数据
         video = request.files.get('video')
-        docs = request.files.getlist('docs')
+        docs = request.files.getlist('docs[]')
         text_input = request.form.get('docsText', '')
         ai_provider = request.form.get('aiProvider', 'openai')
         
+        logger.info(f"收到新的处理请求 - Session: {session_id[:8]}, AI: {ai_provider}")
+        if video and video.filename:
+            logger.info(f"  - 视频文件: {video.filename}")
+        
+        # 增强日志，记录所有收到的文档文件名
+        if docs:
+            file_names = [doc.filename for doc in docs if doc.filename]
+            logger.info(f"  - 参考文档: {len(file_names)} 个 -> {file_names}")
+
         if not video or not video.filename:
             return jsonify({"error": "请选择视频文件"}), 400
         
-        # 检查AI服务配置
         if ai_provider == 'openai' and not OPENAI_API_KEY:
             return jsonify({"error": "OpenAI API Key未在服务器端配置，请联系管理员"}), 400
         
@@ -763,19 +607,21 @@ def process_meeting():
             if not available_models:
                 return jsonify({"error": "未检测到可用的Ollama模型，请确保Ollama服务正在运行"}), 400
         
-        # 在主线程中保存文件
-        video_filename = video.filename
-        base_name = os.path.splitext(video_filename)[0]
+        # 保存视频文件，确保文件名安全
+        video_filename = secure_filename(video.filename) if video and video.filename else f"video-{session_id}.mov"
         mov_path = os.path.join(app.config['UPLOAD_FOLDER'], video_filename)
         video.save(mov_path)
         
-        # 处理文档文件
+        # 处理文档文件，确保文件名唯一
         doc_files = []
         for doc in docs:
             if doc and doc.filename:
-                doc_path = os.path.join(app.config['UPLOAD_FOLDER'], doc.filename)
-                doc.save(doc_path)
-                doc_files.append({'filename': doc.filename, 'path': doc_path})
+                original_filename = secure_filename(doc.filename)
+                # 创建唯一文件名来避免覆盖
+                unique_filename = f"{session_id[:8]}-{uuid.uuid4().hex[:8]}-{original_filename}"
+                saved_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                doc.save(saved_path)
+                doc_files.append({'original_filename': original_filename, 'saved_path': saved_path})
         
         # 在单独的线程中处理
         thread = threading.Thread(
@@ -804,6 +650,7 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
         progress.add_step("audio_extraction", "提取音频", 10)
         progress.add_step("speech_transcription", "语音转文字", 60)
         progress.add_step("document_processing", "处理参考文档", 5)
+        progress.add_step("image_analysis", "分析文档中的图表", 20)
         progress.add_step("ai_correction", "AI智能纠错", 30)
         progress.add_step("summary_generation", "生成会议纪要", 25)
         progress.add_step("file_generation", "生成下载文件", 5)
@@ -882,12 +729,24 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
             logger.info(f"📝 [{session_id[:8]}] 添加背景信息: {len(text_input.strip())} 字符")
         
         # 处理上传的文档文件
-        for doc_info in doc_files:
+        pdf_files_for_image_analysis = []
+        total_docs = len(doc_files)
+        for i, doc_info in enumerate(doc_files):
+            original_filename = doc_info['original_filename']
+            saved_path = doc_info['saved_path']
+            
+            # 更新进度描述和百分比
+            progress.steps[3]['description'] = f"正在处理 {i + 1}/{total_docs}: {original_filename}"
+            progress.update_step_progress(3, int(((i + 1) / total_docs) * 100))
+
             try:
-                text = extract_text_from_file(doc_info['path'])
+                file_ext = os.path.splitext(original_filename)[1].lower()
+                if file_ext == '.pdf':
+                    pdf_files_for_image_analysis.append(saved_path)
+                
+                text = extract_text_from_file(saved_path)
                 if text:
                     # 为每个文档添加标识
-                    file_ext = os.path.splitext(doc_info['filename'])[1].lower()
                     doc_type = {
                         '.pdf': 'PDF文档',
                         '.doc': 'Word文档',
@@ -896,23 +755,36 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
                         '.txt': '文本文档'
                     }.get(file_ext, '文档')
                     
-                    formatted_text = f"## 参考文档：{doc_info['filename']} ({doc_type})\n\n{text}"
+                    formatted_text = f"## 参考文档：{original_filename} ({doc_type})\n\n{text}"
                     doc_texts.append(formatted_text)
-                    logger.info(f"📄 [{session_id[:8]}] 处理{doc_type}: {doc_info['filename']}, 提取 {len(text)} 字符")
+                    logger.info(f"📄 [{session_id[:8]}] 处理{doc_type}: {original_filename}, 提取 {len(text)} 字符")
             except Exception as e:
-                logger.warning(f"⚠️ [{session_id[:8]}] 文档处理失败: {doc_info['filename']}, 错误: {str(e)}")
+                logger.warning(f"⚠️ [{session_id[:8]}] 文档处理失败: {original_filename}, 错误: {str(e)}")
         
+        progress.steps[3]['description'] = f"共处理 {total_docs} 个文档"
         logger.info(f"📚 [{session_id[:8]}] 参考文档处理完成 - 共 {len(doc_texts)} 个资料")
         progress.complete_step(3)
+
+        # 步骤5: 分析文档中的图表
+        progress.start_step(4)
+        image_analysis_results = []
+        if ai_provider == 'openai': # 仅当使用OpenAI时执行
+            for pdf_path in pdf_files_for_image_analysis:
+                image_analysis_results.extend(analyze_pdf_images(pdf_path, ai_provider))
         
-        # 步骤5：AI智能纠错
-        corrected_transcript = advanced_transcription_correction(transcript, doc_texts, progress, 4, ai_provider)
+        if image_analysis_results:
+            doc_texts.extend(image_analysis_results)
+            logger.info(f"🖼️ [{session_id[:8]}] 图表分析完成 - 新增 {len(image_analysis_results)} 条分析结果")
+        progress.complete_step(4)
         
-        # 步骤6：生成会议纪要
-        meeting_summary = generate_meeting_summary(corrected_transcript, doc_texts, progress, 5, ai_provider)
+        # 步骤6：AI智能纠错
+        corrected_transcript = advanced_transcription_correction(transcript, doc_texts, progress, 5, ai_provider)
         
-        # 步骤7：生成文件
-        progress.start_step(6)
+        # 步骤7：生成会议纪要
+        meeting_summary = generate_meeting_summary(corrected_transcript, doc_texts, progress, 6, ai_provider)
+        
+        # 步骤8：生成文件
+        progress.start_step(7)
         
         # 生成原始转录文件
         raw_transcript_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_raw_transcript.md')
@@ -927,13 +799,13 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
         # 生成纠正后的转录文件
         corrected_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_corrected_transcript.md')
         with open(corrected_path, 'w', encoding='utf-8') as f:
-            f.write(f'# AI纠正后的会议转录\n\n')
+            f.write(f'# AI修正后的会议转录\n\n')
             f.write(f'**生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}\n')
             f.write(f'**处理设备**: {whisper_device.upper()}\n')
             f.write(f'**检测语言**: {detected_lang}\n')
             f.write(f'**AI服务**: {ai_provider.upper()}\n')
             f.write(f'**音频时长**: {audio_duration:.1f}秒\n\n')
-            f.write(f'## 纠正后的转录内容\n\n{corrected_transcript}\n')
+            f.write(f'## 修正后的转录内容\n\n{corrected_transcript}\n')
         
         # 生成完整的会议报告
         report_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_meeting_report.md')
@@ -956,9 +828,9 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
                 f.write(f'\n---\n\n')
             
             f.write(f'{meeting_summary["summary"]}\n\n')
-            f.write(f'---\n\n## 附录：完整转录内容\n\n{corrected_transcript}\n')
+            f.write(f'---\n\n## 附录：AI修正后完整记录\n\n{corrected_transcript}\n')
         
-        progress.complete_step(6)
+        progress.complete_step(7)
         
         # 通知处理完成
         total_time = time.time() - start_time
@@ -991,6 +863,64 @@ def download_file(filename):
         logger.error(f"文件下载错误: {e}")
         return jsonify({"error": f"文件下载错误: {str(e)}"}), 500
 
+def analyze_pdf_images(file_path: str, ai_provider: str) -> List[str]:
+    """从PDF中提取图片并使用AI进行分析"""
+    if ai_provider != 'openai' or not OPENAI_API_KEY:
+        logger.info("非OpenAI提供商或未配置Key，跳过图片分析")
+        return []
+
+    logger.info(f"🖼️ 开始从PDF中提取和分析图片: {os.path.basename(file_path)}")
+    image_analyses = []
+    try:
+        doc = fitz.open(file_path)
+        for page_num in range(len(doc)):
+            image_list = doc.get_page_images(page_num)
+            for img_index, img in enumerate(image_list, 1):
+                xref = img[0]
+                base_image = doc.extract_image(xref)
+                image_bytes = base_image["image"]
+                
+                # 将图片转换为可发送的格式
+                image = Image.open(BytesIO(image_bytes))
+                
+                # 确保是RGB格式
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                    
+                buffered = BytesIO()
+                image.save(buffered, format="JPEG")
+                img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                
+                # AI分析图片
+                prompt = "请详细分析这张图片的内容。如果它是一个图表，请解读其数据、趋势和关键信息。如果是一个流程图，请解释其步骤和逻辑。如果是一张截图，请描述其界面和功能。"
+                analysis = call_openai_api(prompt, image_base64=img_base64, max_tokens=500)
+                
+                if analysis:
+                    analysis_text = f"## 来自PDF '{os.path.basename(file_path)}' (第{page_num+1}页, 图{img_index})的图表分析\n\n{analysis}\n"
+                    image_analyses.append(analysis_text)
+                    logger.info(f"✅ 成功分析了PDF '{os.path.basename(file_path)}' 中的一张图片")
+                else:
+                    logger.warning(f"⚠️ 未能分析PDF '{os.path.basename(file_path)}' 中的一张图片")
+
+        doc.close()
+    except Exception as e:
+        logger.error(f"❌ 分析PDF图片时出错: {e}")
+    
+    return image_analyses
+
+# 从文件加载提示词
+def load_prompt(filename: str) -> str:
+    """从文件加载提示词"""
+    try:
+        with open(os.path.join('prompts', filename), 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.error(f"提示词文件未找到: {filename}")
+        return ""
+
+correction_prompt_template = load_prompt('correction_prompt.txt')
+summary_prompt_template = load_prompt('summary_prompt.txt')
+
 if __name__ == '__main__':
     # 启动时显示配置信息
     logger.info("=" * 50)
@@ -1004,6 +934,11 @@ if __name__ == '__main__':
     for model in ollama_models:
         logger.info(f"   - {model['name']}")
     
+    # 检查提示词文件
+    logger.info("=" * 50)
+    logger.info("📝 加载AI提示词:")
+    logger.info(f"   - 转录修正: {'✅ 已加载' if correction_prompt_template else '❌ 加载失败'}")
+    logger.info(f"   - 纪要生成: {'✅ 已加载' if summary_prompt_template else '❌ 加载失败'}")
     logger.info("=" * 50)
     
     socketio.run(app, debug=True, port=5000)

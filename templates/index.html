@@ -52,10 +52,10 @@
                             <i class="icon">📄</i>
                             参考文档 (PDF/DOCX/MD/TXT，可多选)
                         </label>
-                        <input type="file" id="docs" name="docs" accept=".pdf,.doc,.docx,.md,.txt" multiple />
+                        <input type="file" id="docs" name="docs[]" accept=".pdf,.doc,.docx,.md,.txt" multiple />
                         <div class="file-info" id="docsInfo"></div>
                         <div class="form-help">
-                            <span class="info">💡 支持多个文档：技术文档、会议资料、背景介绍等</span>
+                            <span class="info">💡 支持多个文档，其中PDF文件将进行**文本提取**和**图表分析**（需使用OpenAI服务）</span>
                         </div>
                     </div>
 
@@ -512,6 +512,14 @@
                                         <div class="step-progress-fill" style="width: ${step.progress_percentage}%"></div>
                                     </div>
                                     <span class="step-progress-text">${step.progress_percentage}%</span>
+                                </div>
+                            `;
+                        } else if (step.status === 'processing' && step.description.includes('/')) {
+                             progressBar = `
+                                <div class="step-progress">
+                                    <div class="step-progress-bar">
+                                        <div class="step-progress-fill-animated"></div>
+                                    </div>
                                 </div>
                             `;
                         }

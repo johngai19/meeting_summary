@@ -303,15 +303,40 @@ main {
 
 .step-progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-    transition: width 0.3s ease;
-    border-radius: 3px;
+    background-color: #4caf50;
+    border-radius: 4px;
+    transition: width 0.3s ease-in-out;
+}
+
+.step-progress-fill-animated {
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(
+        -45deg, 
+        rgba(76, 175, 80, 0.7) 25%, 
+        rgba(76, 175, 80, 1) 50%, 
+        rgba(76, 175, 80, 0.7) 75%
+    );
+    background-size: 40px 40px;
+    animation: progress-move 2s linear infinite;
+    border-radius: 4px;
+}
+
+@keyframes progress-move {
+    0% {
+        background-position: 0 0;
+    }
+    100% {
+        background-position: 40px 0;
+    }
 }
 
 .step-progress-text {
-    font-size: 0.8em;
-    color: #666;
-    min-width: 35px;
+    font-size: 0.8rem;
+    font-weight: bold;
+    color: #4caf50;
+    margin-left: 8px;
+    white-space: nowrap;
 }
 
 /* 结果区域 */
