@@ -376,8 +376,9 @@ def call_openai_api(prompt: str, model: Optional[str] = None, max_tokens: int = 
     except Exception as e:
         logger.error(f"❌ OpenAI API 调用失败: {str(e)}")
         # 记录更详细的错误信息
-        if hasattr(e, 'response'):
-            logger.error(f"HTTP状态码: {getattr(e.response, 'status_code', 'unknown')}")
+        response = getattr(e, 'response', None)
+        if response:
+            logger.error(f"HTTP状态码: {getattr(response, 'status_code', 'unknown')}")
         return None
 
 @handle_errors(max_retries=3)
