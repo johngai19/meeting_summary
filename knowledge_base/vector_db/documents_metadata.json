@@ -37,5 +37,44 @@
     "priority": 0.9,
     "usage_count": 0,
     "last_accessed": null
+  },
+  "5b27b5a6f210": {
+    "doc_id": "5b27b5a6f210",
+    "title": "meeting_20240115.md",
+    "organization": "测试组织",
+    "doc_type": "meeting_minutes",
+    "upload_time": "2025-07-11T19:44:57.206013",
+    "file_path": "/var/folders/xn/x5rkf21d7k77h33jlqwmrtp80000gp/T/kb_test_mb6jpiz5/meeting_20240115.md",
+    "file_size": 415,
+    "tags": [],
+    "priority": 0.8,
+    "usage_count": 0,
+    "last_accessed": null
+  },
+  "bef6b3081f02": {
+    "doc_id": "bef6b3081f02",
+    "title": "dev_standards.md",
+    "organization": "测试组织",
+    "doc_type": "standards",
+    "upload_time": "2025-07-11T19:44:57.208875",
+    "file_path": "/var/folders/xn/x5rkf21d7k77h33jlqwmrtp80000gp/T/kb_test_mb6jpiz5/dev_standards.md",
+    "file_size": 352,
+    "tags": [],
+    "priority": 1.0,
+    "usage_count": 0,
+    "last_accessed": null
+  },
+  "96b75fa9979d": {
+    "doc_id": "96b75fa9979d",
+    "title": "q1_plan.md",
+    "organization": "测试组织",
+    "doc_type": "plans",
+    "upload_time": "2025-07-11T19:44:57.211359",
+    "file_path": "/var/folders/xn/x5rkf21d7k77h33jlqwmrtp80000gp/T/kb_test_mb6jpiz5/q1_plan.md",
+    "file_size": 339,
+    "tags": [],
+    "priority": 0.9,
+    "usage_count": 0,
+    "last_accessed": null
   }
 }

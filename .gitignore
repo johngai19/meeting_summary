@@ -1,4 +1,9 @@
 .env
 meeting/
 __pycache__/
+chroma_persist/
+organizations/
+vector_db/
+temp_docs/
 example/
+
