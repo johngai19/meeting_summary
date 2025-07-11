@@ -46,10 +46,10 @@ logger = logging.getLogger(__name__)
 
 # 从环境变量读取配置
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1').strip('\'"“” ')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'mistral')
+OLLAMA_BASE_URL = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434').strip('\'"“” ')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'mistral-small3.1:24b')
 
 # 支持的模型列表
 OPENAI_MODELS = [

@@ -13,3 +13,20 @@ pandas
 python-dotenv
 psutil
 ffmpeg-python
+
+werkzeug
+
+# 新增ChromaDB和LangChain依赖
+chromadb
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-text-splitters
+sentence-transformers
+tiktoken
+
+# 可选：如果需要更多文档加载器
+unstructured
+python-docx
+openpyxl

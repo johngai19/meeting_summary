@@ -1,3 +1,4 @@
 .env
 meeting/
 __pycache__/
+example/
