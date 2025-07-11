@@ -235,31 +235,44 @@ class ProcessingProgress:
             
     def estimate_remaining_time(self):
         """估算剩余时间"""
-        if not self.start_time:
+        if not self.start_time or self.total_steps == 0:
             return None
-            
-        elapsed_time = time.time() - self.start_time
-        completed_steps = sum(1 for step in self.steps if step['status'] == 'completed')
         
-        if completed_steps == 0:
-            return None
+        # 使用预设的估算时长来计算
+        total_estimated_duration = sum(step.get('estimated_duration', 0) for step in self.steps)
+        if total_estimated_duration == 0:
+            return None # 无法预估
             
-        avg_time_per_step = elapsed_time / completed_steps
-        remaining_steps = self.total_steps - completed_steps
+        completed_duration = 0
+        for step in self.steps:
+            if step['status'] == 'completed':
+                completed_duration += step.get('estimated_duration', 0)
         
-        return remaining_steps * avg_time_per_step
+        remaining_duration = total_estimated_duration - completed_duration
+        
+        # 对于正在处理的步骤，可以加入更精细的估算
+        if 0 <= self.current_step < len(self.steps) and self.steps[self.current_step]['status'] == 'processing':
+            current_step_progress = self.steps[self.current_step].get('progress_percentage', 0) / 100
+            current_step_estimated_duration = self.steps[self.current_step].get('estimated_duration', 0)
+            remaining_duration -= current_step_progress * current_step_estimated_duration
+
+        return max(0, remaining_duration)
             
     def emit_progress(self):
         if self.session_id:
             # 计算总体进度
-            total_progress = 0
-            for i, step in enumerate(self.steps):
-                if step['status'] == 'completed':
-                    total_progress += 100
-                elif step['status'] == 'processing':
-                    total_progress += step['progress_percentage']
+            total_estimated_duration = sum(step.get('estimated_duration', 0) for step in self.steps)
+            completed_duration = 0
             
-            overall_percentage = total_progress / self.total_steps if self.total_steps > 0 else 0
+            for step in self.steps:
+                if step['status'] == 'completed':
+                    completed_duration += step.get('estimated_duration', 0)
+                elif step['status'] == 'processing':
+                    progress_percentage = step.get('progress_percentage', 0)
+                    estimated_duration = step.get('estimated_duration', 0)
+                    completed_duration += (progress_percentage / 100) * estimated_duration
+            
+            overall_percentage = (completed_duration / total_estimated_duration) * 100 if total_estimated_duration > 0 else 0
             
             # 估算剩余时间
             remaining_time = self.estimate_remaining_time()
@@ -1014,16 +1027,20 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
     logger.info(f"🎬 [{session_id[:8]}] Starting meeting processing...")
     start_time = time.time()
     
+    # 动态预估初始时长
+    audio_duration_estimate = estimate_audio_duration(mov_path) # 先对视频估算
+    transcription_estimate = audio_duration_estimate * 0.2 if audio_duration_estimate > 0 else 60 # 估算为音频时长的20%
+    
     try:
-        # Define processing steps
-        progress.add_step("video_validation", "Validating video file", 2)
-        progress.add_step("audio_extraction", "Extracting audio", 10)
-        progress.add_step("speech_transcription", "Transcribing audio to text", 60)
-        progress.add_step("document_processing", "Processing reference documents", 5)
-        progress.add_step("image_analysis", "Analyzing images in PDFs", 20)
-        progress.add_step("ai_correction", "Correcting transcript with AI", 30)
-        progress.add_step("summary_generation", "Generating meeting summary", 25)
-        progress.add_step("file_generation", "Creating downloadable files", 5)
+        # 定义处理步骤和预估时长(秒)
+        progress.add_step("video_validation", "验证视频文件", 2)
+        progress.add_step("audio_extraction", "提取音频", audio_duration_estimate * 0.05 + 5)
+        progress.add_step("speech_transcription", "语音转文字", transcription_estimate)
+        progress.add_step("document_processing", "处理参考文档", 10)
+        progress.add_step("image_analysis", "分析文档图片", 30)
+        progress.add_step("ai_correction", "AI转录纠错", 45)
+        progress.add_step("summary_generation", "生成会议纪要", 35)
+        progress.add_step("file_generation", "生成下载文件", 5)
 
         # Step 1: Validate Video
         progress.start_step(0)
@@ -1037,11 +1054,17 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
         audio_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{base_name}_audio.wav')
         subprocess.run(['ffmpeg', '-i', mov_path, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', audio_path, '-y'], check=True, capture_output=True, text=True)
         audio_duration = estimate_audio_duration(audio_path)
+        
+        # 更新转录步骤的预估时长
+        progress.steps[2]['estimated_duration'] = audio_duration * 0.2 
+        progress.emit_progress() # 重新广播一下进度
+        
         progress.complete_step(1)
 
         # Step 3: Transcribe Speech
         progress.start_step(2)
-        result = whisper_model.transcribe(audio_path, language=None)
+        # 使用更详细的参数调用，并尝试启用词级时间戳
+        result = whisper_model.transcribe(audio_path, language=None, word_timestamps=True, verbose=False)
         transcript = str(result["text"])
         detected_lang = result.get("language", "unknown")
         progress.complete_step(2)
@@ -1065,8 +1088,8 @@ def process_meeting_async(session_id: str, mov_path: str, video_filename: str, d
 
         # Step 5: Analyze Images in PDFs
         progress.start_step(4)
+        image_analysis_results = []
         if ai_provider == 'openai':
-            image_analysis_results = []
             for pdf_path in pdf_files_for_image_analysis:
                 image_analysis_results.extend(analyze_pdf_images(pdf_path, ai_provider))
             if image_analysis_results:
